@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Bash(bash ~/.claude/statusline-command.sh)",
+      "mcp__notebook__list_allowed_directories",
+      "mcp__notebook__directory_tree",
+      "Bash(npx -y @anthropic-ai/mcp-filesystem --help)",
+      "Bash(npx -y @anthropic-ai/mcp-server-filesystem --help)",
+      "Bash(npx -y @anthropic-ai/mcp-filesystem@latest)",
+      "Bash(npm view:*)",
+      "mcp__notebook__read_text_file",
+      "mcp__notebook__read_file",
+      "Bash(git check-ignore:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(npx skills:*)",
+      "WebFetch(domain:r.jina.ai)"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash .claude/statusline-command.sh"
+  }
+}
