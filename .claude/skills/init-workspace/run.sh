@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-CLAUDE_DIR="${CLAUDE_CONFIG_PATH:-$HOME/.claude}"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 GLOBAL_SETTINGS="$CLAUDE_DIR/settings.json"
 
 echo "Project root: $PROJECT_ROOT"
