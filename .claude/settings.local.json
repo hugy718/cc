@@ -14,11 +14,44 @@
       "Bash(git check-ignore:*)",
       "Bash(echo \"exit: $?\")",
       "Bash(npx skills:*)",
-      "WebFetch(domain:r.jina.ai)"
+      "WebFetch(domain:r.jina.ai)",
+      "Bash(mkdir:*)",
+      "Bash(ls:*)",
+      "Bash(git:*)",
+      "Bash(go:*)",
+      "Bash(npm:*)",
+      "Bash(node:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pip:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(curl:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(docker:*)",
+      "Write(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Bash(bash:*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(sudo:*)",
+      "Bash(su:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(fdisk:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "Bash(kill:*)",
+      "Bash(killall:*)",
+      "Bash(pkill:*)"
     ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "bash .claude/statusline-command.sh"
   }
 }

@@ -1,15 +1,21 @@
 #!/bin/bash
-input=$(cat)
-eval "$(echo "$input" | python3 -c "
+input=$(cat 2>/dev/null)
+
+# Parse JSON input from Claude Code (if available)
+if [ -n "$input" ]; then
+  eval "$(echo "$input" | python3 -c "
 import sys, json, time
-d = json.load(sys.stdin)
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
 cw = d.get('context_window', {})
 cu = cw.get('current_usage') or {}
 model_obj = d.get('model', {})
 if isinstance(model_obj, dict):
     model = model_obj.get('display_name', model_obj.get('id', 'unknown'))
 else:
-    model = str(model_obj)
+    model = str(model_obj) if model_obj else ''
 rl = d.get('rate_limits', {})
 fh = rl.get('five_hour', {})
 sd = rl.get('seven_day', {})
@@ -25,16 +31,13 @@ def fmt_reset(ts):
     return f'{h}h{m}m' if h else f'{m}m'
 fh_reset_str = fmt_reset(fh_reset)
 sd_reset_str = fmt_reset(sd_reset)
-print(f\"cwd={repr(d.get('cwd', ''))}\"
-      f\" model={repr(model)}\"
-      f\" input_tokens={repr(str(cu.get('input_tokens', '')))}\"
-      f\" output_tokens={repr(str(cu.get('output_tokens', '')))}\"
-      f\" cache_read={repr(str(cu.get('cache_read_input_tokens', '')))}\"
+print(f\"model={repr(model)}\"
       f\" fh_pct={repr(str(fh_pct))}\"
       f\" sd_pct={repr(str(sd_pct))}\"
       f\" fh_reset={repr(fh_reset_str)}\"
       f\" sd_reset={repr(sd_reset_str)}\")
-")"
+" 2>/dev/null)" 2>/dev/null
+fi
 
 # Build rate limit display with color coding (green <50%, yellow 50-80%, red >80%)
 color_pct() {
@@ -49,10 +52,11 @@ color_pct() {
 fh_display=$(color_pct "$fh_pct")
 sd_display=$(color_pct "$sd_pct")
 
-printf "\033[01;32m%s@%s\033[00m:\033[01;34m%s\033[00m \033[33m%s\033[00m" \
-  "$(whoami)" "$(hostname -s)" "$cwd" "$model"
+printf "\033[01;32m%s@%s\033[00m:\033[01;34m%s\033[00m" \
+  "$(whoami)" "$(hostname -s)" "$(pwd)"
 
-# Append rate limits if available
+[ -n "$model" ] && printf " \033[33m%s\033[00m" "$model"
+
 if [ -n "$fh_pct" ]; then
   printf " 5h:%b" "$fh_display"
   [ -n "$fh_reset" ] && printf "(%s)" "$fh_reset"
