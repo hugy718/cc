@@ -35,7 +35,26 @@
       "Edit(*)",
       "Glob(*)",
       "Grep(*)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(pip3:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(wc:*)",
+      "Bash(du:*)",
+      "Bash(sort:*)",
+      "Bash(comm:*)",
+      "Bash(diff:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(sh:*)",
+      "Bash(ray:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(watch:*)",
+      "Bash(pkill:*)",
+      "Bash(kill:*)"
     ],
     "deny": [
       "Bash(rm:*)",
@@ -49,9 +68,7 @@
       "Bash(fdisk:*)",
       "Bash(shutdown:*)",
       "Bash(reboot:*)",
-      "Bash(kill:*)",
-      "Bash(killall:*)",
-      "Bash(pkill:*)"
+      "Bash(killall:*)"
     ]
   }
 }
