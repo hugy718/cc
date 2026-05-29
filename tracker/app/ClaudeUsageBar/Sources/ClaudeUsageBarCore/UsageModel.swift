@@ -1,6 +1,6 @@
 import Foundation
 
-public struct UsageWindow: Equatable {
+public struct UsageWindow: Equatable, Sendable {
     public let usedPercentage: Double
     public let resetsAt: Date
     public init(usedPercentage: Double, resetsAt: Date) {
@@ -9,7 +9,7 @@ public struct UsageWindow: Equatable {
     }
 }
 
-public struct UsageSnapshot: Equatable {
+public struct UsageSnapshot: Equatable, Sendable {
     public let capturedAt: Date
     public let fiveHour: UsageWindow?
     public let sevenDay: UsageWindow?

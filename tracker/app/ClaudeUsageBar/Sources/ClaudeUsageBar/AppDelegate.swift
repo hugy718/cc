@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let clock = self?.settings.clock ?? .twentyFourHour
                 return ResetFormatter(clock: clock, calendar: .current).string(for: date, now: Date())
             },
-            onRefresh: { [weak self] in self?.refresh() },
+            onRefresh: { [weak self] in self?.refreshFromAPI() },
             onQuit: { NSApp.terminate(nil) })
         popover = NSPopover()
         popover.behavior = .transient
@@ -78,5 +78,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func refresh() {
         let snapshot = reader.read()
         viewModel.apply(snapshot: snapshot, now: Date())
+    }
+
+    private static let oauthUsageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
+    @objc private func refreshFromAPI() {
+        guard let token = KeychainTokenProvider.token() else {
+            viewModel.note("Sign in to Claude Code first")
+            return
+        }
+        let client = OAuthRefreshClient(fetcher: URLSessionFetcher(), url: Self.oauthUsageURL)
+        Task { @MainActor in
+            let outcome = (try? await client.refresh(token: token)) ?? .failed
+            switch outcome {
+            case .success(let snap): self.viewModel.apply(snapshot: snap, now: Date())
+            case .rateLimited: self.viewModel.note("Rate-limited, try later")
+            case .failed: self.viewModel.note("Refresh failed")
+            }
+        }
     }
 }

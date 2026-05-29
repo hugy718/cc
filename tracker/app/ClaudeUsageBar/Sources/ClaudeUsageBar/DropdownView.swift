@@ -56,6 +56,9 @@ struct DropdownView: View {
                 Button("Refresh", action: onRefresh).font(.system(size: 11.5))
                 Button("Quit", action: onQuit).font(.system(size: 11.5))
             }
+            if let note = viewModel.noteText {
+                Text(note).font(.system(size: 11)).foregroundColor(.orange)
+            }
         }
         .padding(16)
         .frame(width: 300)

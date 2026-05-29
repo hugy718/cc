@@ -4,7 +4,7 @@ public protocol HTTPFetching: Sendable {
     func get(url: URL, bearer: String) async throws -> (Data, Int)
 }
 
-public enum RefreshOutcome: Equatable {
+public enum RefreshOutcome: Equatable, Sendable {
     case success(UsageSnapshot)
     case rateLimited
     case failed

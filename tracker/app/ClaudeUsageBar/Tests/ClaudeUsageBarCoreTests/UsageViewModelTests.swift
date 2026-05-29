@@ -31,3 +31,11 @@ private let vmNow = Date(timeIntervalSince1970: 1780057800) // 2026-05-29 12:30 
     #expect(vm.menuBarText == "—")
     #expect(vm.evaluated == nil)
 }
+
+@MainActor @Test func vmNoteSetsText() {
+    let vm = UsageViewModel(
+        formatter: ResetFormatter(clock: .twentyFourHour, calendar: vmCalendar()),
+        evaluator: SnapshotEvaluator(staleAfter: 1800))
+    vm.note("Rate-limited, try later")
+    #expect(vm.noteText == "Rate-limited, try later")
+}
