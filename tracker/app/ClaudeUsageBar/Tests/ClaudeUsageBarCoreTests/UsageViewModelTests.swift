@@ -39,3 +39,15 @@ private let vmNow = Date(timeIntervalSince1970: 1780057800) // 2026-05-29 12:30 
     vm.note("Rate-limited, try later")
     #expect(vm.noteText == "Rate-limited, try later")
 }
+
+@MainActor @Test func vmApplyClearsNote() {
+    let vm = UsageViewModel(
+        formatter: ResetFormatter(clock: .twentyFourHour, calendar: vmCalendar()),
+        evaluator: SnapshotEvaluator(staleAfter: 1800))
+    vm.note("Rate-limited, try later")
+    let snap = UsageSnapshot(capturedAt: vmNow,
+        fiveHour: UsageWindow(usedPercentage: 10, resetsAt: Date(timeIntervalSince1970: 1780069320)),
+        sevenDay: nil)
+    vm.apply(snapshot: snap, now: vmNow)
+    #expect(vm.noteText == nil)
+}

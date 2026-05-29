@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var watcher: CacheFileWatcher?
     private var popover: NSPopover!
+    private let gate = MonotonicSnapshotGate()
+    private var lastSnapshot: UsageSnapshot?
 
     private var cacheURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -28,11 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
 
-        viewModel.$menuBarText
-            .receive(on: RunLoop.main)
-            .sink { [weak self] text in self?.statusItem.button?.title = text }
-            .store(in: &cancellables)
-
         refresh()
         startTimer()
 
@@ -42,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher?.start()
 
         let settingsBridge = SettingsBridge(settings: settings) { [weak self] in
-            self?.reloadFormatterAndLaunchAgent()
+            self?.applySettingsChange()
         }
         let content = DropdownView(
             viewModel: viewModel,
@@ -83,11 +80,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refresh() {
-        let snapshot = reader.read()
-        viewModel.apply(snapshot: snapshot, now: Date())
+        if let snapshot = reader.read(), gate.accept(snapshot) {
+            lastSnapshot = snapshot
+        }
+        viewModel.apply(snapshot: lastSnapshot, now: Date())
+        updateMenuBarTitle()
     }
 
-    private func reloadFormatterAndLaunchAgent() {
+    private func updateMenuBarTitle() {
+        guard let button = statusItem.button else { return }
+        guard let e = viewModel.evaluated else {
+            button.title = "—"
+            return
+        }
+        let formatter = ResetFormatter(clock: settings.clock, calendar: .current)
+        let builder = MenuBarTextBuilder(formatter: formatter)
+        let segs = builder.segments(for: e, now: Date())
+        if segs.isEmpty {
+            button.title = "—"
+            return
+        }
+        let attr = NSMutableAttributedString()
+        let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        for (i, s) in segs.enumerated() {
+            if i > 0 {
+                attr.append(NSAttributedString(string: "  ", attributes: [.font: baseFont]))
+            }
+            attr.append(NSAttributedString(string: s.percentText, attributes: [
+                .font: baseFont,
+                .foregroundColor: Self.color(for: s.level)
+            ]))
+            attr.append(NSAttributedString(string: " " + s.resetText, attributes: [
+                .font: baseFont,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]))
+        }
+        button.attributedTitle = attr
+    }
+
+    private static func color(for level: UsageLevel) -> NSColor {
+        switch level {
+        case .low: return .systemGreen
+        case .medium: return .systemYellow
+        case .high: return .systemRed
+        }
+    }
+
+    private func applySettingsChange() {
         let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
         LaunchAgentInstaller.apply(enabled: settings.launchAtLogin, programPath: exePath)
         refresh()
@@ -104,7 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let outcome = (try? await client.refresh(token: token)) ?? .failed
             switch outcome {
-            case .success(let snap): self.viewModel.apply(snapshot: snap, now: Date())
+            case .success(let snap):
+                if self.gate.accept(snap) { self.lastSnapshot = snap }
+                self.viewModel.apply(snapshot: self.lastSnapshot, now: Date())
+                self.updateMenuBarTitle()
             case .rateLimited: self.viewModel.note("Rate-limited, try later")
             case .failed: self.viewModel.note("Refresh failed")
             }

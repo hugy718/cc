@@ -33,6 +33,7 @@ public final class UsageViewModel: ObservableObject {
         evaluated = e
         menuBarText = textBuilder.text(for: e, now: now)
         updatedAgoText = "updated " + Self.ago(from: e.capturedAt, to: now)
+        noteText = nil
     }
 
     nonisolated static func ago(from: Date, to: Date) -> String {
