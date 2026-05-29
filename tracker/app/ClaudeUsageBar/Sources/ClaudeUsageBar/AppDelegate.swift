@@ -54,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(rootView: content)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
+
+        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        LaunchAgentInstaller.apply(enabled: settings.launchAtLogin, programPath: exePath)
     }
 
     @objc private func togglePopover() {
