@@ -7,7 +7,11 @@ public protocol HTTPFetching: Sendable {
 public enum RefreshOutcome: Equatable, Sendable {
     case success(UsageSnapshot)
     case rateLimited
-    case failed
+    case failed(status: Int)
+}
+
+private func ccuLog(_ message: String) {
+    FileHandle.standardError.write(Data("ClaudeUsageBar: \(message)\n".utf8))
 }
 
 public struct OAuthRefreshClient: Sendable {
@@ -22,13 +26,21 @@ public struct OAuthRefreshClient: Sendable {
     public func refresh(token: String) async throws -> RefreshOutcome {
         let (data, status) = try await fetcher.get(url: url, bearer: token)
         if status == 429 { return .rateLimited }
-        guard status == 200 else { return .failed }
+        guard status == 200 else {
+            let snippet = String(data: data, encoding: .utf8)?.prefix(400) ?? ""
+            ccuLog("API status \(status) body: \(snippet)")
+            return .failed(status: status)
+        }
         // The live response uses the same window field names as the cache file.
         struct Body: Decodable {
             let five_hour: RateLimitWindowDTO?
             let seven_day: RateLimitWindowDTO?
         }
-        guard let body = try? JSONDecoder().decode(Body.self, from: data) else { return .failed }
+        guard let body = try? JSONDecoder().decode(Body.self, from: data) else {
+            let snippet = String(data: data, encoding: .utf8)?.prefix(400) ?? ""
+            ccuLog("API 200 but unexpected body shape: \(snippet)")
+            return .failed(status: 200)
+        }
         let file = UsageCacheFile(schema: 1, capturedAt: Date().timeIntervalSince1970,
                                   fiveHour: body.five_hour, sevenDay: body.seven_day)
         return .success(UsageSnapshot(file: file))

@@ -141,14 +141,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let client = OAuthRefreshClient(fetcher: URLSessionFetcher(), url: Self.oauthUsageURL)
         Task { @MainActor in
-            let outcome = (try? await client.refresh(token: token)) ?? .failed
-            switch outcome {
-            case .success(let snap):
-                if self.gate.accept(snap) { self.lastSnapshot = snap }
-                self.viewModel.apply(snapshot: self.lastSnapshot, now: Date())
-                self.updateMenuBarTitle()
-            case .rateLimited: self.viewModel.note("Rate-limited, try later")
-            case .failed: self.viewModel.note("Refresh failed")
+            do {
+                let outcome = try await client.refresh(token: token)
+                switch outcome {
+                case .success(let snap):
+                    if self.gate.accept(snap) { self.lastSnapshot = snap }
+                    self.viewModel.apply(snapshot: self.lastSnapshot, now: Date())
+                    self.updateMenuBarTitle()
+                case .rateLimited: self.viewModel.note("Rate-limited, try later")
+                case .failed(let status): self.viewModel.note("API refresh failed (HTTP \(status))")
+                }
+            } catch {
+                FileHandle.standardError.write(Data("ClaudeUsageBar: refresh threw: \(error)\n".utf8))
+                self.viewModel.note("Refresh error: \(error.localizedDescription)")
             }
         }
     }
