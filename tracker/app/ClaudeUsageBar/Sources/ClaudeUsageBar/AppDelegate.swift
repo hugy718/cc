@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .failed(let status): self.viewModel.note("API refresh failed (HTTP \(status))")
                 }
             } catch {
-                FileHandle.standardError.write(Data("ClaudeUsageBar: refresh threw: \(error)\n".utf8))
+                CCULog.write("refresh threw: \(error)")
                 self.viewModel.note("Refresh error: \(error.localizedDescription)")
             }
         }

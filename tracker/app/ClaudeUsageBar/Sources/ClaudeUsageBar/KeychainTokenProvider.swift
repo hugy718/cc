@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import ClaudeUsageBarCore
 
 enum KeychainTokenProvider {
     /// Best-effort lookup of the Claude Code OAuth token from the login keychain.
@@ -34,6 +35,6 @@ enum KeychainTokenProvider {
     }
 
     private static func log(_ message: String) {
-        FileHandle.standardError.write(Data("ClaudeUsageBar: \(message)\n".utf8))
+        CCULog.write(message)
     }
 }

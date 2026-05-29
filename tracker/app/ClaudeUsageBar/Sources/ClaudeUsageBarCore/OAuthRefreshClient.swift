@@ -10,9 +10,6 @@ public enum RefreshOutcome: Equatable, Sendable {
     case failed(status: Int)
 }
 
-private func ccuLog(_ message: String) {
-    FileHandle.standardError.write(Data("ClaudeUsageBar: \(message)\n".utf8))
-}
 
 public struct OAuthRefreshClient: Sendable {
     private let fetcher: any HTTPFetching
@@ -27,8 +24,8 @@ public struct OAuthRefreshClient: Sendable {
         let (data, status) = try await fetcher.get(url: url, bearer: token)
         if status == 429 { return .rateLimited }
         guard status == 200 else {
-            let snippet = String(data: data, encoding: .utf8)?.prefix(400) ?? ""
-            ccuLog("API status \(status) body: \(snippet)")
+            let snippet = String(data: data, encoding: .utf8)?.prefix(4000) ?? ""
+            CCULog.write("API status \(status) body: \(snippet)")
             return .failed(status: status)
         }
         // The live response uses the same window field names as the cache file.
@@ -37,8 +34,8 @@ public struct OAuthRefreshClient: Sendable {
             let seven_day: RateLimitWindowDTO?
         }
         guard let body = try? JSONDecoder().decode(Body.self, from: data) else {
-            let snippet = String(data: data, encoding: .utf8)?.prefix(400) ?? ""
-            ccuLog("API 200 but unexpected body shape: \(snippet)")
+            let snippet = String(data: data, encoding: .utf8)?.prefix(4000) ?? ""
+            CCULog.write("API 200 but unexpected body shape: \(snippet)")
             return .failed(status: 200)
         }
         let file = UsageCacheFile(schema: 1, capturedAt: Date().timeIntervalSince1970,
