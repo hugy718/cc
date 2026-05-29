@@ -1,73 +1,124 @@
 # ClaudeUsageBar
 
-A native macOS menu bar app that shows Claude Pro/Max usage at a glance: 5-hour and weekly consumption (percentage + absolute reset time), updated every 10 seconds from a local file cache.
+A tiny native macOS **menu bar app** that shows your Claude Pro/Max usage at a glance — your **5‑hour** and **weekly** limits, with the percentage used and when each window resets — so you can peek anytime without opening anything.
 
-## What it shows
+It lives only in the menu bar (no Dock icon, no window).
 
-- Menu bar title: `5h 42% | 7d 18%` (dashes when data is missing)
-- Dropdown popover: progress bars for each window, reset times, "updated Xs ago", **Refresh** (manual API fetch), and **Quit**
-- Settings: 12h / 24h clock toggle, launch-at-login toggle
+---
 
-## Architecture — producer / consumer split
+## What you see
+
+**In the menu bar**, both windows as color‑coded text:
 
 ```
-Claude Code statusline
-  └─ runs tracker/producer/write_usage_cache.py
-       └─ atomically writes ~/.claude/usage-cache.json
-            └─ ClaudeUsageBar.app reads & file-watches that JSON
-                 └─ refreshes display every 10 s (local clock / reset recompute)
+42% →15:42   18% →Sun 16:00
 ```
 
-**Producer** (`tracker/producer/write_usage_cache.py`): invoked by the Claude Code statusline hook, reads account rate-limit data from the Claude Code process, and atomically writes it to `~/.claude/usage-cache.json` via a temp-file rename.
+- The number is **percent used**; the `→time` is when that window **resets** (absolute clock time).
+- Color shows urgency: **green** under 50%, **yellow** 50–80%, **red** 80%+.
+- Today's resets show as `15:42`; later ones show the weekday, e.g. `Sun 16:00`.
 
-**Consumer** (`tracker/app/ClaudeUsageBar`): a SwiftPM package split into:
-- `ClaudeUsageBarCore` — pure logic library (unit-tested): schema decoding, domain model, snapshot evaluation (passed-reset zeroing, staleness), menu bar text formatting, settings persistence.
-- `ClaudeUsageBar` app shell — wires the core to AppKit (`NSStatusItem`) and a SwiftUI popover; runs a 10-second timer for local refresh; uses `CacheFileWatcher` (FSEvents) for immediate updates.
+**Click it** for a dropdown with:
+- A progress bar, percentage, and reset time for each window.
+- "updated Ns ago".
+- A **Refresh** button (manual live fetch) and **Quit**.
+- Settings: **12‑hour / 24‑hour** clock and **Launch at login**.
 
-## Why a file cache, not live API polling
+---
 
-Claude's rate-limit counters only change when you make requests, and the `/api/oauth/usage` endpoint returns HTTP 429 under frequent polling. The statusline-written file is the reliable data source. The app's 10-second refresh is purely local: it recomputes the clock display and detects passed resets (zeroes the percentage). Reset times come from absolute `resets_at` epoch timestamps in the file.
+## Requirements
 
-## Cache file schema
+- macOS 13 or later.
+- A Claude **Pro or Max** subscription, signed in through **Claude Code** (the app reads usage that Claude Code already collects).
+- To build it: Xcode **Command Line Tools** (`xcode-select --install`). Full Xcode is *not* required.
 
+---
+
+## Install
+
+```bash
+# from the repo root
+bash tracker/app/make_icon.sh      # builds the app icon (one-time, or after editing icon.svg)
+bash tracker/app/package_app.sh    # builds ClaudeUsageBar.app
+open tracker/app/ClaudeUsageBar.app
+```
+
+You can move `tracker/app/ClaudeUsageBar.app` to `/Applications` if you like.
+
+**One‑time data setup:** the numbers are fed by your Claude Code status line. The repo wires this up by having the status line write your latest usage to `~/.claude/usage-cache.json`. After installing, **use Claude Code once** so that file gets created; the menu bar then shows real numbers. (If you've been using Claude Code already, it's probably there.)
+
+To launch automatically at login, open the dropdown and turn on **Launch at login**.
+
+---
+
+## How it stays up to date
+
+- The menu bar **refreshes its display every 10 seconds** (local only — it recomputes the clock and detects when a window has reset).
+- Your actual usage numbers update whenever **Claude Code talks to the API** (which is the only time they change), via the `~/.claude/usage-cache.json` file the app watches.
+- **Opening the dropdown also pulls fresh numbers live** from Claude's usage endpoint, then updates in place. To stay friendly with Claude's rate limits, this live pull is throttled to **once every 10 seconds** — reopening sooner just shows the cached numbers.
+- Between Claude Code sessions, the shown percentages are still correct (they only change when you actually use Claude). If a window's reset time passes while nothing is running, the app shows it dropped to ~0% with a small "awaiting refresh" dot until fresh data arrives.
+
+---
+
+## Troubleshooting
+
+**A password prompt appears the first time you click Refresh.**
+That's macOS asking permission for the app to read your Claude Code login token from the Keychain. Click **Always Allow** and it won't ask again. (The app only reads the token to call Claude's usage endpoint; it's never logged or stored.)
+
+**The dropdown says "Rate‑limited, try later."**
+Claude's live usage endpoint limits frequent requests. Wait a bit and reopen — the menu bar still shows your last known numbers in the meantime.
+
+**The menu bar shows `—`.**
+No data yet. Use Claude Code once to create `~/.claude/usage-cache.json`, or click Refresh.
+
+**The app icon looks like a blank/old icon in Finder.**
+That's the macOS icon cache, not the app. Force a refresh:
+```bash
+touch /Applications/ClaudeUsageBar.app   # or wherever you put it
+killall Finder
+```
+
+**Something else is wrong with Refresh.**
+The app logs diagnostics to `~/Library/Logs/ClaudeUsageBar.log` (HTTP status and which Keychain field the token came from — never the token itself). Open it to see what happened.
+
+---
+
+## Uninstall
+
+1. Quit the app (menu bar → **Quit**).
+2. Delete `ClaudeUsageBar.app`.
+3. If you enabled launch‑at‑login, remove `~/Library/LaunchAgents/com.claudeusagebar.agent.plist`.
+4. Optional: delete `~/.claude/usage-cache.json` and `~/Library/Logs/ClaudeUsageBar.log`.
+
+---
+
+## For developers
+
+**Layout**
+- `tracker/producer/write_usage_cache.py` — invoked by the Claude Code status line; atomically writes account rate‑limits to `~/.claude/usage-cache.json` (temp‑file + rename, so concurrent sessions never corrupt it).
+- `tracker/app/ClaudeUsageBar/` — a SwiftPM package:
+  - `ClaudeUsageBarCore` — pure, unit‑tested logic: JSON decoding, domain model, reset‑time formatting, color thresholds, stale/passed‑reset evaluation, monotonic `captured_at` guard, menu‑bar text/segments, the OAuth refresh client.
+  - `ClaudeUsageBar` — the app shell: AppKit `NSStatusItem` + a SwiftUI popover, a 10s timer, and an FSEvents file watcher.
+- `tracker/app/icon.svg`, `make_icon.sh`, `round_corners.swift` — the app icon source and build (rasterizes the SVG and re‑clips to transparent rounded corners, since `qlmanage` flattens onto white).
+
+Built with Command Line Tools only — uses `NSStatusItem` (not SwiftUI `MenuBarExtra`) and a LaunchAgent plist (not `SMAppService`).
+
+**Cache file schema**
 ```json
 {
   "schema": 1,
   "captured_at": 1780040000,
   "five_hour": { "used_percentage": 42.0, "resets_at": 1780041720 },
-  "seven_day":  { "used_percentage": 18.0, "resets_at": 1780300800 }
+  "seven_day": { "used_percentage": 18.0, "resets_at": 1780300800 }
 }
 ```
+Windows and fields are optional; `0.0` is a valid percentage. (The live `/api/oauth/usage` endpoint uses a different shape — `utilization` plus an ISO‑8601 `resets_at` — which the app converts internally.)
 
-Both window objects are optional; missing or malformed windows are silently omitted. A `used_percentage` of `0.0` is a valid value (not treated as missing).
-
-## Install / build
-
-### Producer (statusline wiring)
-
-Ensure `~/.claude/statusline-command.sh` invokes the producer script, and that `refreshInterval: 10` is set in the Claude Code statusLine settings. Both are wired as part of the tracker repo setup.
-
-### App
-
+**Tests**
 ```bash
-bash tracker/app/package_app.sh   # produces tracker/app/ClaudeUsageBar.app
-open tracker/app/ClaudeUsageBar.app
+cd tracker/app/ClaudeUsageBar && swift test          # 34 tests (Swift Testing, CLT-compatible)
+python3 -m unittest discover -s tracker/producer/tests -v   # 6 tests (producer)
 ```
 
-Requires only Command Line Tools (no Xcode). Uses `NSStatusItem` (AppKit, not SwiftUI `MenuBarExtra`) and installs a LaunchAgent plist for launch-at-login.
-
-## Manual Refresh button
-
-The **Refresh** button in the dropdown is a best-effort live fetch: it reads the Claude Code OAuth token from the login Keychain (service `Claude Code-credentials`, keys `accessToken` or `claudeAiOauth.accessToken`), then hits `/api/oauth/usage`. HTTP 429 shows "Rate-limited, try later"; other errors show "Refresh failed". The app never auto-polls this endpoint.
-
-> **Note:** Keychain service name and token JSON shape are best-effort and may need adjustment depending on the Claude Code version installed.
-
-## Tests
-
-```bash
-# Swift (CLT-compatible Swift Testing, not XCTest)
-cd tracker/app/ClaudeUsageBar && swift test        # expect 31 tests passed
-
-# Python producer
-python3 -m unittest discover -s tracker/producer/tests -v   # expect 6 tests passed
-```
+**Edit the icon**
+Change `tracker/app/ClaudeUsageBar/Resources/icon.svg`, then `bash tracker/app/make_icon.sh && bash tracker/app/package_app.sh`.
