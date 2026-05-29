@@ -65,10 +65,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            refresh()
+            refresh()                 // instant: show cached data from the file
+            maybeRefreshFromAPI()     // live: throttled network refresh on open
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    /// Trigger a live API refresh when the popover opens, but at most once per
+    /// `apiRefreshThrottle` seconds so rapid open/close doesn't trip the
+    /// endpoint's aggressive 429 rate-limit.
+    private var lastAPIRefreshAt: Date?
+    private let apiRefreshThrottle: TimeInterval = 10
+    private func maybeRefreshFromAPI() {
+        if let last = lastAPIRefreshAt, Date().timeIntervalSince(last) < apiRefreshThrottle { return }
+        lastAPIRefreshAt = Date()
+        refreshFromAPI()
     }
 
     private func startTimer() {
