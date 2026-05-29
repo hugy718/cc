@@ -48,8 +48,10 @@ export async function listSessions(projectDir) {
   for (const e of entries) {
     if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
     const p = path.join(projectDir, e.name);
-    const s = await stat(p);
-    out.push({ id: e.name.replace(/\.jsonl$/, ''), path: p, mtime: s.mtimeMs });
+    try {
+      const s = await stat(p); // file may vanish between readdir and stat on a live folder
+      out.push({ id: e.name.replace(/\.jsonl$/, ''), path: p, mtime: s.mtimeMs });
+    } catch { /* skip a file that disappeared mid-scan */ }
   }
   return out;
 }
@@ -116,10 +118,12 @@ export async function readSubagentSummaries(projectDir, sessionId) {
   for (const e of entries) {
     if (!e.isFile() || !e.name.startsWith('agent-') || !e.name.endsWith('.jsonl')) continue;
     const p = path.join(dir, e.name);
-    const { records } = parseLines(await readHead(p));
-    const agentId = records.find((r) => r.agentId)?.agentId
-      ?? e.name.slice('agent-'.length).replace(/\.jsonl$/, '');
-    out.push({ file: p, agentId, firstPrompt: firstUserPrompt(records) });
+    try {
+      const { records } = parseLines(await readHead(p));
+      const agentId = records.find((r) => r.agentId)?.agentId
+        ?? e.name.slice('agent-'.length).replace(/\.jsonl$/, '');
+      out.push({ file: p, agentId, firstPrompt: firstUserPrompt(records) });
+    } catch { /* skip an agent file that can't be read */ }
   }
   return out;
 }
