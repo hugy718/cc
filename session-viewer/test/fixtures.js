@@ -21,7 +21,7 @@ export const records = [
     toolUseResult: { exitCode: 0, stdout: 'On branch main' },
     message: { role: 'user', content: [
       { type: 'tool_result', tool_use_id: 'tu-bash', content: 'On branch main\nnothing to commit' } ] } },
-  { type: 'assistant', timestamp: '2026-05-21T10:00:07Z', message: { role: 'assistant', content: [
+  { type: 'assistant', timestamp: '2026-05-21T10:00:05Z', message: { role: 'assistant', content: [
       { type: 'tool_use', id: 'tu-tc', name: 'TaskCreate',
         input: { subject: 'Do the thing', description: 'details' } } ] } },
   { type: 'user', timestamp: '2026-05-21T10:00:06Z',
