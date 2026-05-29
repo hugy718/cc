@@ -36,12 +36,37 @@ Dispatch             — { description, subagentType, prompt, status }
 
 SubagentSummary      — { file:string, agentId:string, firstPrompt:string }
 
-SessionSummary       — { path, sessionId, title, firstPrompt, messageCount, mtime,
-                         cwd, gitBranch, project, projectDir, id }
+SessionSummary       — { path, sessionId, title, firstPrompt, mtime,
+                         cwd, gitBranch, project, projectDir, id, unreadable? }
+                       (stub from listAllSessions: title:'…', firstPrompt:'';
+                        enriched in the background by a bounded head-read.
+                        No messageCount — counting requires a full-file scan.)
 
 Row (for rendering)  — { text:string, style:string, idx?:number, _head?:boolean, path?:string }
                        style ∈ user|ai|plain|dim|edit|bash|add|del|ok|run|meta|accent|group|sess
 ```
+
+## Efficiency & memory (must hold for large `.claude` folders)
+
+This viewer must stay responsive against many projects and long (multi-MB)
+sessions. The design obeys these rules — do not violate them in any task:
+
+1. **Strictly read-only. It never writes any file** — no on-disk cache, no
+   generated index, no temp files. All state is in-memory and rebuilt per launch.
+2. **The session list is built from bounded head-reads, not full files.** Listing
+   uses `readdir`+`stat` only (no content); each title/first-prompt comes from
+   reading at most the first ~128 KB of a file (`readHead`). Titles/first prompts
+   live at the top of the file, so this is enough; if an `ai-title` line falls
+   beyond the head window, the title falls back to the first user prompt.
+3. **Startup is instant; titles fill in progressively.** `listAllSessions`
+   returns stubs immediately (sorted newest-first); `enrichSummaries` fills titles
+   in the background with a concurrency cap, updating the UI in batches.
+4. **Opening a session reads exactly one file.** Subagent logs are read **lazily**
+   — only when you drill into a specific subagent — and via `readHead` for their
+   first prompt. Never eagerly read every subagent file.
+5. The only place a whole file is read into memory is the **one** session you open
+   (needed to render its transcript), and the rendered row arrays are sliced to
+   the viewport by `ScrollView`, so on-screen cost is bounded regardless of length.
 
 File layout:
 
@@ -705,7 +730,6 @@ test('summarize extracts title, cwd, branch, counts', () => {
   assert.equal(s.gitBranch, 'main');
   assert.equal(s.firstPrompt, 'relax the permissions please');
   assert.equal(s.mtime, 123);
-  assert.ok(s.messageCount >= 1);
 });
 
 test('summarize falls back to first prompt when no ai-title', () => {
@@ -739,23 +763,23 @@ export function firstUserPrompt(records) {
   return '';
 }
 
+// `lines` may be a bounded head-read of the file, not the whole thing —
+// title and first prompt live at the top, so that is sufficient.
 export function summarize(lines, meta) {
   const { records } = parseLines(lines);
   let title = '';
   let cwd = '';
   let gitBranch = '';
   let sessionId = '';
-  let messageCount = 0;
   for (const rec of records) {
     if (rec.type === 'ai-title' && rec.aiTitle) title = rec.aiTitle;
     if (!cwd && rec.cwd) cwd = rec.cwd;
     if (!gitBranch && rec.gitBranch) gitBranch = rec.gitBranch;
     if (!sessionId && rec.sessionId) sessionId = rec.sessionId;
-    if ((rec.type === 'user' || rec.type === 'assistant') && !rec.isMeta) messageCount++;
   }
   const firstPrompt = firstUserPrompt(records);
   if (!title) title = firstPrompt ? firstPrompt.slice(0, 60) : '(untitled)';
-  return { path: meta.path, sessionId, title, firstPrompt, messageCount, mtime: meta.mtime, cwd, gitBranch };
+  return { path: meta.path, sessionId, title, firstPrompt, mtime: meta.mtime, cwd, gitBranch };
 }
 ```
 
@@ -790,7 +814,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { buildIndex, readSubagentSummaries, defaultRoot } from '../src/io/store.js';
+import { buildIndex, listAllSessions, enrichSummaries, readHead, readSubagentSummaries, defaultRoot } from '../src/io/store.js';
 import { toJsonl, subagentRecords } from './fixtures.js';
 
 async function makeRoot() {
@@ -824,6 +848,34 @@ test('buildIndex on a missing root returns empty', async () => {
   assert.deepEqual(summaries, []);
 });
 
+test('readHead reads only the first N bytes as whole lines', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'csv-'));
+  const p = path.join(root, 'big.jsonl');
+  await writeFile(p, 'line-one\nline-two\nline-three\n');
+  const lines = await readHead(p, 12); // only "line-one\nlin" fits → partial dropped
+  assert.deepEqual(lines, ['line-one']);
+});
+
+test('listAllSessions returns stubs (no content read), newest first', async () => {
+  const { root } = await makeRoot();
+  const stubs = await listAllSessions(root);
+  assert.equal(stubs.length, 1);
+  assert.equal(stubs[0].id, 'sess-1');
+  assert.equal(stubs[0].project, '-Users-me-cc');
+  assert.equal(stubs[0].title, '…');           // not yet enriched
+  assert.ok(typeof stubs[0].mtime === 'number');
+});
+
+test('enrichSummaries fills titles and reports progress in batches', async () => {
+  const { root } = await makeRoot();
+  const stubs = await listAllSessions(root);
+  let batches = 0;
+  const out = await enrichSummaries(stubs, { concurrency: 4, batchSize: 1, onBatch: () => { batches++; } });
+  assert.equal(out[0].title, 'Relax init-workspace perms');
+  assert.equal(out[0].firstPrompt, 'relax the permissions please');
+  assert.ok(batches >= 1);
+});
+
 test('readSubagentSummaries reads agent files', async () => {
   const { proj } = await makeRoot();
   const subs = await readSubagentSummaries(proj, 'sess-1');
@@ -841,7 +893,7 @@ Expected: FAIL (module not found).
 - [ ] **Step 3: Implement `src/io/store.js`**
 
 ```js
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { parseLines } from '../core/parser.js';
@@ -851,9 +903,27 @@ export function defaultRoot() {
   return path.join(homedir(), '.claude', 'projects');
 }
 
+// Read the WHOLE file (only used for the single session the user opens).
 export async function readLines(filePath) {
   const text = await readFile(filePath, 'utf8');
   return text.split('\n');
+}
+
+// Read at most `maxBytes` from the start and return only the COMPLETE lines.
+// Bounds memory/IO per file regardless of session size — used for the index
+// and for subagent first-prompts. (Titles/first prompts live at the top.)
+export async function readHead(filePath, maxBytes = 131072) {
+  const fh = await open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    const { bytesRead } = await fh.read(buf, 0, maxBytes, 0);
+    const text = buf.subarray(0, bytesRead).toString('utf8');
+    const lines = text.split('\n');
+    if (bytesRead === maxBytes && lines.length > 1) lines.pop(); // drop partial last line
+    return lines;
+  } finally {
+    await fh.close();
+  }
 }
 
 export async function listProjects(root) {
@@ -879,26 +949,59 @@ export async function listSessions(projectDir) {
   return out;
 }
 
-export async function buildIndex(root) {
+// Cheap: readdir + stat only, NO file content read. Returns stubs sorted
+// newest-first so the UI can render the list instantly.
+export async function listAllSessions(root) {
   const projects = await listProjects(root);
-  const summaries = [];
-  let unreadable = 0;
+  const out = [];
   for (const proj of projects) {
-    const sessions = await listSessions(proj.dir);
-    for (const sess of sessions) {
-      try {
-        const lines = await readLines(sess.path);
-        const sum = summarize(lines, { path: sess.path, mtime: sess.mtime });
-        summaries.push({ ...sum, project: proj.name, projectDir: proj.dir, id: sess.id });
-      } catch {
-        unreadable++;
-      }
+    for (const sess of await listSessions(proj.dir)) {
+      out.push({
+        ...sess,
+        project: proj.name,
+        projectDir: proj.dir,
+        title: '…',
+        firstPrompt: '',
+      });
     }
   }
-  summaries.sort((a, b) => b.mtime - a.mtime);
-  return { summaries, unreadable };
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out;
 }
 
+// Enrich stubs in place (copied) with title/cwd/branch via bounded head-reads,
+// running `concurrency` at a time and calling onBatch(snapshot) every batchSize.
+export async function enrichSummaries(stubs, { concurrency = 8, batchSize = 24, onBatch } = {}) {
+  const result = stubs.map((s) => ({ ...s }));
+  let next = 0;
+  let done = 0;
+  async function worker() {
+    while (next < result.length) {
+      const i = next++;
+      try {
+        const head = await readHead(result[i].path);
+        const sum = summarize(head, { path: result[i].path, mtime: result[i].mtime });
+        result[i] = { ...result[i], ...sum };
+      } catch {
+        result[i] = { ...result[i], title: result[i].id, unreadable: true };
+      }
+      done++;
+      if (onBatch && done % batchSize === 0) onBatch(result.slice());
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+  if (onBatch) onBatch(result.slice());
+  return result;
+}
+
+// Convenience used by tests / simple callers: list + enrich fully.
+export async function buildIndex(root) {
+  const stubs = await listAllSessions(root);
+  const summaries = await enrichSummaries(stubs, { concurrency: 8 });
+  return { summaries, unreadable: summaries.filter((s) => s.unreadable).length };
+}
+
+// Read lazily — only when the user drills into a subagent. Bounded head-read.
 export async function readSubagentSummaries(projectDir, sessionId) {
   const dir = path.join(projectDir, sessionId, 'subagents');
   let entries;
@@ -908,7 +1011,7 @@ export async function readSubagentSummaries(projectDir, sessionId) {
   for (const e of entries) {
     if (!e.isFile() || !e.name.startsWith('agent-') || !e.name.endsWith('.jsonl')) continue;
     const p = path.join(dir, e.name);
-    const { records } = parseLines(await readLines(p));
+    const { records } = parseLines(await readHead(p));
     const agentId = records.find((r) => r.agentId)?.agentId
       ?? e.name.slice('agent-'.length).replace(/\.jsonl$/, '');
     out.push({ file: p, agentId, firstPrompt: firstUserPrompt(records) });
@@ -920,7 +1023,7 @@ export async function readSubagentSummaries(projectDir, sessionId) {
 - [ ] **Step 4: Run tests**
 
 Run: `node --test test/store.test.js`
-Expected: PASS (4 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1477,7 +1580,9 @@ export function App({ root }) {
   const leftWidth = 30;
   const rightWidth = Math.max(20, cols - leftWidth - 4);
 
-  const [index, setIndex] = useState({ summaries: [], unreadable: 0, loading: true });
+  const [sessions, setSessions] = useState([]); // SessionSummary stubs, enriched in place
+  const [scanning, setScanning] = useState(true);
+  const [unreadable, setUnreadable] = useState(0);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [focus, setFocus] = useState('list');
@@ -1491,19 +1596,31 @@ export function App({ root }) {
   const [drillTop, setDrillTop] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const idx = await store.buildIndex(root);
-      setIndex({ ...idx, loading: false });
+      setScanning(true);
+      const stubs = await store.listAllSessions(root); // cheap: readdir + stat only
+      if (cancelled) return;
+      setSessions(stubs);                               // render the list instantly
+      const enriched = await store.enrichSummaries(stubs, {
+        concurrency: 8,
+        batchSize: 24,
+        onBatch: (snapshot) => { if (!cancelled) setSessions(snapshot); }, // titles fill in progressively
+      });
+      if (cancelled) return;
+      setUnreadable(enriched.filter((s) => s.unreadable).length);
+      setScanning(false);
     })();
+    return () => { cancelled = true; };
   }, [root]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return index.summaries;
-    return index.summaries.filter(
+    if (!q) return sessions;
+    return sessions.filter(
       (s) => (s.title || '').toLowerCase().includes(q) || (s.firstPrompt || '').toLowerCase().includes(q),
     );
-  }, [index.summaries, query]);
+  }, [sessions, query]);
 
   useEffect(() => { setSelIdx((i) => Math.max(0, Math.min(i, filtered.length - 1))); }, [filtered.length]);
 
@@ -1513,15 +1630,16 @@ export function App({ root }) {
     return [...m.entries()].map(([project, sessions]) => ({ project, sessions }));
   }, [filtered]);
 
+  // Opening a session reads exactly ONE file. Subagent logs stay unread
+  // (subSummaries: null) until the user drills into a specific subagent.
   async function openSession(summary) {
     const { records } = parseLines(await store.readLines(summary.path));
-    const subSummaries = await store.readSubagentSummaries(summary.projectDir, summary.id);
     setSession({
       summary,
       steps: toSteps(records),
       tasks: buildTaskBoard(records),
       dispatches: listDispatches(records),
-      subSummaries,
+      subSummaries: null,
     });
     setView('conversation'); setCursor(0); setTop(0); setExpanded(new Set()); setDrill([]); setFocus('detail');
   }
@@ -1538,7 +1656,13 @@ export function App({ root }) {
   function pushDrill(d) { setDrill((s) => [...s, d]); setDrillTop(0); }
 
   async function drillSubagent(dispatch) {
-    const file = resolveDispatchFile(dispatch, session.subSummaries, new Set());
+    // Lazily read the subagent directory the first time one is opened, then cache it.
+    let subs = session.subSummaries;
+    if (subs === null) {
+      subs = await store.readSubagentSummaries(session.summary.projectDir, session.summary.id);
+      setSession((s) => (s ? { ...s, subSummaries: subs } : s));
+    }
+    const file = resolveDispatchFile(dispatch, subs, new Set());
     if (!file) { pushDrill({ title: 'subagent', rows: [{ text: '(subagent log not found / ambiguous)', style: 'dim' }] }); return; }
     const { records } = parseLines(await store.readLines(file));
     pushDrill({ title: `⛭ ${dispatch.subagentType}`, rows: R.conversationRows(toSteps(records), new Set(), rightWidth - 2) });
@@ -1586,8 +1710,14 @@ export function App({ root }) {
     if (input === '/') { setSearching(true); return; }
     if (input === 'r') {
       (async () => {
-        const idx = await store.buildIndex(root);
-        setIndex({ ...idx, loading: false });
+        setScanning(true);
+        const stubs = await store.listAllSessions(root);
+        setSessions(stubs);
+        const enriched = await store.enrichSummaries(stubs, {
+          concurrency: 8, batchSize: 24, onBatch: (snap) => setSessions(snap),
+        });
+        setUnreadable(enriched.filter((s) => s.unreadable).length);
+        setScanning(false);
         if (session) openSession(session.summary);
       })();
       return;
@@ -1636,11 +1766,9 @@ export function App({ root }) {
           />
         </Box>
         <Box flexGrow={1} flexDirection="column" borderStyle="round" borderColor={focus === 'detail' ? 'cyan' : 'gray'} paddingX={1}>
-          {index.loading ? (
-            <Text dimColor>Scanning {root} …</Text>
-          ) : !session ? (
+          {!session ? (
             <Text dimColor>
-              {filtered.length} sessions{index.unreadable ? ` · ${index.unreadable} unreadable` : ''}. Select one and press ⏎.
+              {filtered.length} sessions{scanning ? ' · scanning…' : ''}{unreadable ? ` · ${unreadable} unreadable` : ''}. Select one and press ⏎.
             </Text>
           ) : (
             <>
@@ -1689,6 +1817,7 @@ Run: `cd /Users/bytedance/cc/session-viewer && npm start`
 Expected: the two-pane UI renders; the left pane lists projects/sessions from `~/.claude/projects`, newest first.
 
 - [ ] **Step 3: Verify each interaction (check off each)**
+  - [ ] The session list appears (near-)instantly with titles filling in as the scan progresses (efficiency: no blocking full-folder read at startup).
   - [ ] `↑/↓` moves the session selection; `⏎` opens a session into the right pane.
   - [ ] Conversation shows your prompts, Claude's replies, collapsed `💭 thinking`, and tool rows.
   - [ ] Move the cursor (`↑/↓` with focus on detail) to an `✎ Edit` row and press `⏎` → a colored diff drill-in opens; `Esc` closes it.
@@ -1724,7 +1853,11 @@ git commit -m "feat(cli): entry point wiring App to ~/.claude/projects"
 # Claude Session Viewer
 
 An interactive terminal viewer for Claude Code sessions stored under
-`~/.claude/projects`. Read-only; writes nothing. Runs over SSH on a headless box.
+`~/.claude/projects`. Read-only; writes nothing (no cache/export files). Runs
+over SSH on a headless box. Built to stay fast on large `.claude` folders: the
+session list comes from a stat-only scan plus bounded head-reads that fill in
+titles in the background; a full file is read only for the one session you open,
+and subagent logs only when you drill into one.
 
 ## Run
 
@@ -1781,7 +1914,8 @@ git commit -m "docs: README for session viewer"
 
 **Spec coverage:**
 - Node + Ink read-only TUI → Tasks 1, 11–15 ✓
-- Browse projects→sessions→conversation → store.buildIndex (8), App/SessionList (12, 14) ✓
+- Browse projects→sessions→conversation → store.listAllSessions + enrichSummaries (8), App/SessionList (12, 14) ✓
+- Efficient on large folders → bounded `readHead`, `listAllSessions` (stat-only) + background `enrichSummaries`, lazy subagent reads, no disk writes (8, 14; see "Efficiency & memory") ✓
 - Edits as diffs → diff (4), diffRows/render (9), drill-in (13, 14) ✓
 - Commands + output → bashRows (9), drill-in (14) ✓
 - Task board → tasks (5), taskRows (9), Tasks tab (14) ✓
@@ -1796,9 +1930,9 @@ git commit -m "docs: README for session viewer"
 1. UI files are `.jsx` run via `tsx` (added dev dep) rather than literal single-file no-build; this keeps `npm start` build-free while allowing clean JSX. Core/IO/tests stay plain `.js` so `node --test` needs no runner.
 2. Spec's per-view components (Conversation/TaskBoard/SubagentList) are implemented as pure row-builders in `render.js` rendered by a generic `ScrollView`, instead of three separate components — better separation (logic is pure + unit-tested) and less duplicated rendering code.
 3. The drill-in **replaces** the body while open (Esc returns) rather than literally sliding over, because Ink has no overlay/z-index. Behavior is identical from the user's side.
-4. `store.readLines` reads the whole file then parses, retaining only summary fields in the index (file sizes seen ≤ ~2 MB make true streaming unnecessary); noted as a future optimization if needed.
+4. The index is built from bounded `readHead` (≤128 KB/file) + stat-only listing with progressive background enrichment, and subagent logs are read lazily on drill-in. `store.readLines` (whole-file) is used only for the single session opened. No `messageCount` (it would force a full-file scan). The app never writes to disk. See the "Efficiency & memory" section.
 
 **Placeholder scan:** none — every code step contains complete, runnable code.
 
-**Type consistency:** `Row` uses `idx`/`_head` uniformly across all row-builders; `ScrollView`/`ensureVisible` key on `r.idx`; `SessionList` keys on `r.path`. `SessionSummary` fields (`path`,`projectDir`,`id`,`title`,`firstPrompt`,`mtime`,`cwd`,`gitBranch`,`project`) are produced in `store.buildIndex` and consumed consistently in `App`.
+**Type consistency:** `Row` uses `idx`/`_head` uniformly across all row-builders; `ScrollView`/`ensureVisible` key on `r.idx`; `SessionList` keys on `r.path`. `SessionSummary` fields (`path`,`projectDir`,`id`,`title`,`firstPrompt`,`mtime`,`cwd`,`gitBranch`,`project`) are produced by `store.listAllSessions` (stubs) + `enrichSummaries` and consumed consistently in `App`.
 ```
