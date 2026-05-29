@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var reader: CacheFileReader!
     private var timer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    private var watcher: CacheFileWatcher?
 
     private var cacheURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -32,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         refresh()
         startTimer()
+
+        watcher = CacheFileWatcher(directoryURL: cacheURL.deletingLastPathComponent()) { [weak self] in
+            self?.refresh()
+        }
+        watcher?.start()
     }
 
     private func startTimer() {
