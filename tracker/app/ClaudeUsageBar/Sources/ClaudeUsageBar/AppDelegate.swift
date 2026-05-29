@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 import ClaudeUsageBarCore
 
 @MainActor
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var cancellables = Set<AnyCancellable>()
     private var watcher: CacheFileWatcher?
+    private var popover: NSPopover!
 
     private var cacheURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -38,6 +40,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refresh()
         }
         watcher?.start()
+
+        let content = DropdownView(
+            viewModel: viewModel,
+            resetText: { [weak self] date in
+                let clock = self?.settings.clock ?? .twentyFourHour
+                return ResetFormatter(clock: clock, calendar: .current).string(for: date, now: Date())
+            },
+            onRefresh: { [weak self] in self?.refresh() },
+            onQuit: { NSApp.terminate(nil) })
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: content)
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePopover)
+    }
+
+    @objc private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            refresh()
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
 
     private func startTimer() {
