@@ -35,3 +35,11 @@ export function resolveDispatchFile(dispatch, summaries, used = new Set()) {
   if (match) { used.add(match.file); return match.file; }
   return null;
 }
+
+// Resolve every dispatch to a file using ONE shared `used` set, so distinct
+// dispatches that share a prompt map to distinct files (in dispatch order).
+// Returns an array parallel to `dispatches` (entries may be null).
+export function resolveAllDispatchFiles(dispatches, summaries) {
+  const used = new Set();
+  return dispatches.map((d) => resolveDispatchFile(d, summaries, used));
+}

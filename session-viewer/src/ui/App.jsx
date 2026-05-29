@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { useTermSize } from './useTermSize.jsx';
 import { ScrollView } from './ScrollView.jsx';
@@ -8,9 +8,9 @@ import * as store from '../io/store.js';
 import { parseLines } from '../core/parser.js';
 import { toSteps } from '../core/normalize.js';
 import { buildTaskBoard } from '../core/tasks.js';
-import { listDispatches, resolveDispatchFile } from '../core/subagents.js';
+import { listDispatches, resolveAllDispatchFiles } from '../core/subagents.js';
 import * as R from './render.js';
-import { ensureVisible } from './scroll.js';
+import { ensureVisible, clampTop } from './scroll.js';
 
 function Tabs({ view, session }) {
   const item = (key, label) => (
@@ -31,8 +31,14 @@ export function App({ root }) {
   const { exit } = useApp();
   const { cols, rows: termRows } = useTermSize();
   const bodyHeight = Math.max(3, termRows - 2);
+  const contentHeight = Math.max(1, bodyHeight - 4); // detail pane minus border + tabs + meta lines
   const leftWidth = 30;
   const rightWidth = Math.max(20, cols - leftWidth - 4);
+
+  // Tracks mount status so async work that resolves after unmount/quit
+  // doesn't call setState on a torn-down tree.
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
 
   const [sessions, setSessions] = useState([]); // SessionSummary stubs, enriched in place
   const [scanning, setScanning] = useState(true);
@@ -49,24 +55,22 @@ export function App({ root }) {
   const [drill, setDrill] = useState([]);
   const [drillTop, setDrillTop] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setScanning(true);
-      const stubs = await store.listAllSessions(root); // cheap: readdir + stat only
-      if (cancelled) return;
-      setSessions(stubs);                               // render the list instantly
-      const enriched = await store.enrichSummaries(stubs, {
-        concurrency: 8,
-        batchSize: 24,
-        onBatch: (snapshot) => { if (!cancelled) setSessions(snapshot); }, // titles fill in progressively
-      });
-      if (cancelled) return;
-      setUnreadable(enriched.filter((s) => s.unreadable).length);
-      setScanning(false);
-    })();
-    return () => { cancelled = true; };
-  }, [root]);
+  async function scan() {
+    setScanning(true);
+    const stubs = await store.listAllSessions(root); // cheap: readdir + stat only
+    if (!alive.current) return;
+    setSessions(stubs);                               // render the list instantly
+    const enriched = await store.enrichSummaries(stubs, {
+      concurrency: 8,
+      batchSize: 24,
+      onBatch: (snapshot) => { if (alive.current) setSessions(snapshot); }, // titles fill in progressively
+    });
+    if (!alive.current) return;
+    setUnreadable(enriched.filter((s) => s.unreadable).length);
+    setScanning(false);
+  }
+
+  useEffect(() => { scan(); }, [root]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -85,15 +89,29 @@ export function App({ root }) {
   }, [filtered]);
 
   // Opening a session reads exactly ONE file. Subagent logs stay unread
-  // (subSummaries: null) until the user drills into a specific subagent.
+  // (subSummaries/resolvedFiles: null) until the user drills into a subagent.
   async function openSession(summary) {
-    const { records } = parseLines(await store.readLines(summary.path));
+    let records;
+    try {
+      ({ records } = parseLines(await store.readLines(summary.path)));
+    } catch {
+      if (!alive.current) return;
+      setSession({
+        summary,
+        steps: [{ kind: 'assistantText', text: '(session file could not be read)' }],
+        tasks: [], dispatches: [], subSummaries: [], resolvedFiles: [],
+      });
+      setView('conversation'); setCursor(0); setTop(0); setExpanded(new Set()); setDrill([]); setFocus('detail');
+      return;
+    }
+    if (!alive.current) return;
     setSession({
       summary,
       steps: toSteps(records),
       tasks: buildTaskBoard(records),
       dispatches: listDispatches(records),
       subSummaries: null,
+      resolvedFiles: null,
     });
     setView('conversation'); setCursor(0); setTop(0); setExpanded(new Set()); setDrill([]); setFocus('detail');
   }
@@ -105,21 +123,33 @@ export function App({ root }) {
     return { rows: R.subagentRows(session.dispatches, rightWidth), count: session.dispatches.length };
   }, [session, view, expanded, rightWidth]);
 
-  useEffect(() => { setTop((t) => ensureVisible(rows, bodyHeight - 1, cursor, t)); }, [cursor, rows, bodyHeight]);
+  // Keep the cursored item within the actual visible content window.
+  useEffect(() => { setTop((t) => ensureVisible(rows, contentHeight, cursor, t)); }, [cursor, rows, contentHeight]);
 
   function pushDrill(d) { setDrill((s) => [...s, d]); setDrillTop(0); }
 
-  async function drillSubagent(dispatch) {
-    // Lazily read the subagent directory the first time one is opened, then cache it.
-    let subs = session.subSummaries;
-    if (subs === null) {
-      subs = await store.readSubagentSummaries(session.summary.projectDir, session.summary.id);
-      setSession((s) => (s ? { ...s, subSummaries: subs } : s));
+  // Resolve every dispatch to its subagent file ONCE, with a single shared
+  // `used` set, so distinct same-prompt dispatches map to distinct files.
+  // Cached on the session; re-opening the same dispatch reuses its file.
+  async function ensureResolved() {
+    if (session.resolvedFiles) return session.resolvedFiles;
+    const subs = await store.readSubagentSummaries(session.summary.projectDir, session.summary.id);
+    const resolvedFiles = resolveAllDispatchFiles(session.dispatches, subs);
+    if (alive.current) setSession((s) => (s ? { ...s, subSummaries: subs, resolvedFiles } : s));
+    return resolvedFiles;
+  }
+
+  async function openSubagentByIndex(i, subagentType) {
+    try {
+      const resolved = await ensureResolved();
+      const file = resolved[i];
+      if (!file) { pushDrill({ title: 'subagent', rows: [{ text: '(subagent log not found / ambiguous)', style: 'dim' }] }); return; }
+      const { records } = parseLines(await store.readLines(file));
+      if (!alive.current) return;
+      pushDrill({ title: `⛭ ${subagentType || ''}`, rows: R.conversationRows(toSteps(records), new Set(), rightWidth - 2) });
+    } catch {
+      pushDrill({ title: 'subagent', rows: [{ text: '(subagent log unreadable)', style: 'dim' }] });
     }
-    const file = resolveDispatchFile(dispatch, subs, new Set());
-    if (!file) { pushDrill({ title: 'subagent', rows: [{ text: '(subagent log not found / ambiguous)', style: 'dim' }] }); return; }
-    const { records } = parseLines(await store.readLines(file));
-    pushDrill({ title: `⛭ ${dispatch.subagentType}`, rows: R.conversationRows(toSteps(records), new Set(), rightWidth - 2) });
   }
 
   async function doDrill() {
@@ -140,42 +170,37 @@ export function App({ root }) {
       } else if (step.subtype === 'read' && step.result) {
         pushDrill({ title: '📄 result', rows: R.readRows(step, rightWidth - 2) });
       } else if (step.subtype === 'agent') {
-        await drillSubagent({ prompt: step.input.prompt || '', subagentType: step.input.subagent_type || '' });
+        // map this agent step to its dispatch by occurrence order
+        let agentIdx = -1;
+        for (let k = 0; k <= cursor; k++) {
+          const s2 = session.steps[k];
+          if (s2.kind === 'tool' && s2.subtype === 'agent') agentIdx++;
+        }
+        await openSubagentByIndex(agentIdx, step.input.subagent_type);
       }
     } else if (view === 'subagents') {
       const d = session.dispatches[cursor];
-      if (d) await drillSubagent(d);
+      if (d) await openSubagentByIndex(cursor, d.subagentType);
     }
   }
 
   useInput((input, key) => {
-    if (searching) return; // TextInput owns input while the search field is open
+    if (searching) { if (key.escape) setSearching(false); return; } // TextInput owns input otherwise
     if (input === 'q') { exit(); return; }
 
     if (drill.length) {
+      const dr = drill[drill.length - 1];
+      const dh = Math.max(1, termRows - 3);
       if (key.escape) setDrill((s) => s.slice(0, -1));
-      else if (key.upArrow) setDrillTop((t) => Math.max(0, t - 1));
-      else if (key.downArrow) setDrillTop((t) => t + 1);
-      else if (key.pageUp) setDrillTop((t) => Math.max(0, t - bodyHeight));
-      else if (key.pageDown) setDrillTop((t) => t + bodyHeight);
+      else if (key.upArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t - 1));
+      else if (key.downArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t + 1));
+      else if (key.pageUp) setDrillTop((t) => clampTop(dr.rows.length, dh, t - dh));
+      else if (key.pageDown) setDrillTop((t) => clampTop(dr.rows.length, dh, t + dh));
       return;
     }
 
     if (input === '/') { setSearching(true); return; }
-    if (input === 'r') {
-      (async () => {
-        setScanning(true);
-        const stubs = await store.listAllSessions(root);
-        setSessions(stubs);
-        const enriched = await store.enrichSummaries(stubs, {
-          concurrency: 8, batchSize: 24, onBatch: (snap) => setSessions(snap),
-        });
-        setUnreadable(enriched.filter((s) => s.unreadable).length);
-        setScanning(false);
-        if (session) openSession(session.summary);
-      })();
-      return;
-    }
+    if (input === 'r') { scan().then(() => { if (alive.current && session) openSession(session.summary); }); return; }
 
     if (focus === 'list') {
       if (key.upArrow) setSelIdx((i) => Math.max(0, i - 1));
@@ -183,9 +208,9 @@ export function App({ root }) {
       else if (key.return || key.rightArrow) { const s = filtered[selIdx]; if (s) openSession(s); }
     } else {
       if (key.upArrow) setCursor((c) => Math.max(0, c - 1));
-      else if (key.downArrow) setCursor((c) => Math.min(count - 1, c + 1));
+      else if (key.downArrow) setCursor((c) => Math.max(0, Math.min(count - 1, c + 1)));
       else if (key.pageUp) setCursor((c) => Math.max(0, c - bodyHeight));
-      else if (key.pageDown) setCursor((c) => Math.min(count - 1, c + bodyHeight));
+      else if (key.pageDown) setCursor((c) => Math.max(0, Math.min(count - 1, c + bodyHeight)));
       else if (input === 'g') setCursor(0);
       else if (input === 'G') setCursor(Math.max(0, count - 1));
       else if (key.tab) { setView((v) => (v === 'conversation' ? 'tasks' : v === 'tasks' ? 'subagents' : 'conversation')); setCursor(0); setTop(0); }
@@ -197,7 +222,7 @@ export function App({ root }) {
   // ---- render ----
   if (drill.length > 0) {
     const d = drill[drill.length - 1];
-    return <DrillIn title={d.title} rows={d.rows} top={drillTop} height={termRows - 3} />;
+    return <DrillIn title={d.title} rows={d.rows} top={drillTop} height={Math.max(1, termRows - 3)} />;
   }
 
   const hint = focus === 'list'
@@ -228,7 +253,7 @@ export function App({ root }) {
             <>
               <Tabs view={view} session={session} />
               <Text dimColor>{session.summary.cwd || ''} · {session.summary.gitBranch || ''}</Text>
-              <ScrollView rows={rows} height={bodyHeight - 4} top={top} cursorIdx={focus === 'detail' ? cursor : undefined} />
+              <ScrollView rows={rows} height={contentHeight} top={top} cursorIdx={focus === 'detail' ? cursor : undefined} />
             </>
           )}
         </Box>

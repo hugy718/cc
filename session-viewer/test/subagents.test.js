@@ -1,7 +1,7 @@
 // test/subagents.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listDispatches, resolveDispatchFile } from '../src/core/subagents.js';
+import { listDispatches, resolveDispatchFile, resolveAllDispatchFiles } from '../src/core/subagents.js';
 import { records } from './fixtures.js';
 
 test('listDispatches extracts Agent dispatches with status', () => {
@@ -23,4 +23,13 @@ test('resolveDispatchFile matches by first prompt, consumes used files', () => {
   assert.ok(used.has('/a/agent-y.jsonl'));
   // a second dispatch with the same prompt won't re-pick the consumed file
   assert.equal(resolveDispatchFile({ prompt: 'find the helper' }, summaries, used), null);
+});
+
+test('resolveAllDispatchFiles maps distinct same-prompt dispatches to distinct files in order', () => {
+  const summaries = [
+    { file: '/a/agent-1.jsonl', agentId: '1', firstPrompt: 'do it' },
+    { file: '/a/agent-2.jsonl', agentId: '2', firstPrompt: 'do it' },
+  ];
+  const out = resolveAllDispatchFiles([{ prompt: 'do it' }, { prompt: 'do it' }], summaries);
+  assert.deepEqual(out, ['/a/agent-1.jsonl', '/a/agent-2.jsonl']);
 });
