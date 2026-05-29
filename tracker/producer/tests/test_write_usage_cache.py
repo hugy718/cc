@@ -23,6 +23,7 @@ class WriteUsageCacheTest(unittest.TestCase):
             self.assertEqual(data["five_hour"]["used_percentage"], 42.0)
             self.assertEqual(data["five_hour"]["resets_at"], 1780041720)
             self.assertEqual(data["seven_day"]["used_percentage"], 18.0)
+            self.assertEqual(data["seven_day"]["resets_at"], 1780300800)
 
     def test_no_tmp_residue(self):
         with tempfile.TemporaryDirectory() as d:
@@ -42,6 +43,25 @@ class WriteUsageCacheTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "usage-cache.json"
             r = run("not json", out)
+            self.assertEqual(r.returncode, 0)
+            self.assertFalse(out.exists())
+
+    def test_bare_filename_path_exits_zero(self):
+        import os as _os
+        cwd = _os.getcwd()
+        with tempfile.TemporaryDirectory() as d:
+            _os.chdir(d)
+            try:
+                r = run(json.dumps({"rate_limits": {"five_hour": {"used_percentage": 3.0, "resets_at": 5}}}), "bare-cache.json")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(Path(d, "bare-cache.json").exists())
+            finally:
+                _os.chdir(cwd)
+
+    def test_non_dict_json_exits_zero_no_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "usage-cache.json"
+            r = run("[1,2,3]", out)
             self.assertEqual(r.returncode, 0)
             self.assertFalse(out.exists())
 

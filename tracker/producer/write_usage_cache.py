@@ -26,6 +26,8 @@ def main():
         d = json.loads(raw)
     except Exception:
         return 0
+    if not isinstance(d, dict):
+        return 0
     rl = d.get("rate_limits")
     if not isinstance(rl, dict):
         return 0
@@ -39,9 +41,9 @@ def main():
     if sd is not None:
         payload["seven_day"] = sd
     target = out_path()
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".usage-cache.", suffix=".tmp",
-                               dir=os.path.dirname(target))
+    parent = os.path.dirname(os.path.abspath(target))
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".usage-cache.", suffix=".tmp", dir=parent)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f)
