@@ -36,6 +36,7 @@ struct WindowRow: View {
 
 struct DropdownView: View {
     @ObservedObject var viewModel: UsageViewModel
+    @ObservedObject var settings: SettingsBridge
     let resetText: (Date) -> String
     let onRefresh: () -> Void
     let onQuit: () -> Void
@@ -58,6 +59,18 @@ struct DropdownView: View {
             }
             if let note = viewModel.noteText {
                 Text(note).font(.system(size: 11)).foregroundColor(.orange)
+            }
+            Divider()
+            HStack {
+                Toggle("12-hour", isOn: Binding(
+                    get: { settings.twelveHour },
+                    set: { settings.setTwelveHour($0) }))
+                    .toggleStyle(.checkbox).font(.system(size: 11.5))
+                Spacer()
+                Toggle("Launch at login", isOn: Binding(
+                    get: { settings.launchAtLogin },
+                    set: { settings.setLaunchAtLogin($0) }))
+                    .toggleStyle(.checkbox).font(.system(size: 11.5))
             }
         }
         .padding(16)

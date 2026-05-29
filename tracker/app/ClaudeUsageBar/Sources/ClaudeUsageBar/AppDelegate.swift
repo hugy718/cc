@@ -41,8 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         watcher?.start()
 
+        let settingsBridge = SettingsBridge(settings: settings) { [weak self] in
+            self?.reloadFormatterAndLaunchAgent()
+        }
         let content = DropdownView(
             viewModel: viewModel,
+            settings: settingsBridge,
             resetText: { [weak self] date in
                 let clock = self?.settings.clock ?? .twentyFourHour
                 return ResetFormatter(clock: clock, calendar: .current).string(for: date, now: Date())
@@ -81,6 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func refresh() {
         let snapshot = reader.read()
         viewModel.apply(snapshot: snapshot, now: Date())
+    }
+
+    private func reloadFormatterAndLaunchAgent() {
+        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        LaunchAgentInstaller.apply(enabled: settings.launchAtLogin, programPath: exePath)
+        refresh()
     }
 
     private static let oauthUsageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
