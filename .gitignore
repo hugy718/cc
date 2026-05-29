@@ -211,3 +211,6 @@ notebook
 
 # brainstorming visual-companion mockups
 .superpowers/
+
+# ClaudeUsageBar packaged app bundle
+tracker/app/ClaudeUsageBar.app/
