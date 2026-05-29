@@ -23,3 +23,13 @@ import Foundation
     #expect(snap.fiveHour == nil)   // resets_at missing -> not a usable window
     #expect(snap.sevenDay == nil)
 }
+
+@Test func zeroPercentageWindowRetained() {
+    let file = UsageCacheFile(
+        schema: 1, capturedAt: 1,
+        fiveHour: .init(usedPercentage: 0.0, resetsAt: 2),
+        sevenDay: nil)
+    let snap = UsageSnapshot(file: file)
+    #expect(snap.fiveHour != nil)               // 0% is a real value, not "missing"
+    #expect(snap.fiveHour?.usedPercentage == 0.0)
+}
