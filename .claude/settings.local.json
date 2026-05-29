@@ -1,4 +1,9 @@
 {
+  "statusLine": {
+    "type": "command",
+    "command": "bash .claude/statusline-command.sh",
+    "refreshInterval": 10
+  },
   "permissions": {
     "allow": [
       "Skill(update-config)",
