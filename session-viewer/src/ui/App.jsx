@@ -190,7 +190,7 @@ export function App({ root }) {
 
     if (drill.length) {
       const dr = drill[drill.length - 1];
-      const dh = Math.max(1, termRows - 3);
+      const dh = Math.max(1, termRows - 5); // matches DrillIn's ScrollView height
       if (key.escape) setDrill((s) => s.slice(0, -1));
       else if (key.upArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t - 1));
       else if (key.downArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t + 1));
@@ -222,7 +222,7 @@ export function App({ root }) {
   // ---- render ----
   if (drill.length > 0) {
     const d = drill[drill.length - 1];
-    return <DrillIn title={d.title} rows={d.rows} top={drillTop} height={Math.max(1, termRows - 3)} />;
+    return <DrillIn title={d.title} rows={d.rows} top={drillTop} height={Math.max(1, termRows - 5)} />;
   }
 
   const hint = focus === 'list'
@@ -230,7 +230,7 @@ export function App({ root }) {
     : '↑↓ move · ⏎ drill-in · ⇥ views · ← back · g/G top/bottom · q quit';
 
   return (
-    <Box flexDirection="column" width={cols} height={termRows}>
+    <Box flexDirection="column" width={cols} height={Math.max(1, termRows - 1)}>
       <Box height={bodyHeight}>
         <Box width={leftWidth} flexDirection="column" borderStyle="round" borderColor={focus === 'list' ? 'cyan' : 'gray'}>
           <SessionList

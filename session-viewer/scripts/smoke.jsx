@@ -53,6 +53,17 @@ try {
   contains(conv, 'git status', 'conversation shows the Bash command');
   contains(conv, 'Conversation', 'tab bar shows Conversation');
 
+  // EVIDENCE: a frame as tall as the terminal forces a scroll on every repaint
+  // (the per-keystroke blink). It must leave at least one free line.
+  const maxRows = process.stdout.rows || 24;
+  const frameLines = lastFrame().split('\n').length;
+  console.log(`  [evidence] frame lines = ${frameLines}, terminal rows = ${maxRows}`);
+  assert.ok(
+    frameLines <= maxRows - 1,
+    `frame fills/overflows the terminal (${frameLines} lines vs ${maxRows} rows) → scroll-flicker`,
+  );
+  console.log('  PASS frame leaves a free line (no full-height scroll)');
+
   // 3. Cursor nav must not crash.
   stdin.write(DOWN);
   await sleep(50);
@@ -67,6 +78,19 @@ try {
   stdin.write('\t');
   await sleep(150);
   contains(lastFrame(), 'Explore', 'Subagents view shows the dispatch');
+
+  // 6. Drill into the subagent's nested conversation; the drill view must also
+  //    leave a free line (same scroll-flicker root cause).
+  stdin.write('\r');
+  await sleep(250);
+  contains(lastFrame(), 'Found it', 'subagent drill shows nested conversation');
+  const drillLines = lastFrame().split('\n').length;
+  console.log(`  [evidence] drill frame lines = ${drillLines}, terminal rows = ${maxRows}`);
+  assert.ok(
+    drillLines <= maxRows - 1,
+    `drill view fills/overflows the terminal (${drillLines} lines vs ${maxRows} rows) → scroll-flicker`,
+  );
+  console.log('  PASS drill view leaves a free line');
 
   console.log('\nSMOKE PASS');
 } catch (err) {
