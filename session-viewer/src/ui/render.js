@@ -1,0 +1,156 @@
+import { editDiff } from '../core/diff.js';
+import { ICON } from './theme.js';
+
+export function sanitize(s) {
+  return String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+}
+
+export function wrap(s, width) {
+  const w = Math.max(1, width);
+  const out = [];
+  for (const raw of sanitize(s).split('\n')) {
+    if (raw.length <= w) { out.push(raw); continue; }
+    let line = raw;
+    while (line.length > w) { out.push(line.slice(0, w)); line = line.slice(w); }
+    out.push(line);
+  }
+  return out;
+}
+
+export function shortPath(p) {
+  if (!p) return '';
+  return String(p).split('/').slice(-2).join('/');
+}
+
+// One-line headline for a tool step + which drill (if any) it opens.
+export function toolHeadline(step) {
+  const { subtype, tool, input, result } = step;
+  if (subtype === 'edit' || subtype === 'write') {
+    const d = editDiff(tool, input);
+    return { style: 'edit', text: `${ICON.edit} ${tool}  ${shortPath(input.file_path || '')}  +${d.added} −${d.removed}`, drill: 'diff' };
+  }
+  if (subtype === 'bash') {
+    const cmd = (input.command || '').split('\n')[0];
+    const exit = result?.structured?.exitCode;
+    const meta = exit !== undefined ? `exit ${exit}` : (result ? 'done' : '');
+    return { style: 'bash', text: `${ICON.bash} ${cmd}   ${meta}`, drill: 'bash' };
+  }
+  if (subtype === 'read') {
+    const target = input.file_path || input.path || input.pattern || '';
+    return { style: 'dim', text: `${ICON.read} ${tool} ${shortPath(target)}`, drill: result ? 'read' : null };
+  }
+  if (subtype === 'agent') {
+    return { style: 'edit', text: `${ICON.agent} Agent · ${input.subagent_type || ''}`, drill: 'subagent' };
+  }
+  if (subtype === 'task') {
+    const label = tool === 'TaskCreate' ? `+ ${input.subject || ''}`
+      : tool === 'TaskUpdate' ? `→ task ${input.taskId} ${input.status}` : 'task list';
+    return { style: 'dim', text: `• ${label}`, drill: null };
+  }
+  return { style: 'dim', text: `· ${tool}`, drill: null };
+}
+
+export function conversationRows(steps, expanded, width) {
+  const rows = [];
+  steps.forEach((step, i) => {
+    if (step.kind === 'userPrompt') {
+      rows.push({ text: `${ICON.user} you`, style: 'user', idx: i, _head: true });
+      for (const l of wrap(step.text, width - 3)) rows.push({ text: '   ' + l, style: 'user', idx: i });
+      rows.push({ text: '', style: 'dim', idx: i });
+    } else if (step.kind === 'assistantText') {
+      rows.push({ text: `${ICON.ai} claude`, style: 'ai', idx: i, _head: true });
+      for (const l of wrap(step.text, width - 3)) rows.push({ text: '   ' + l, style: 'plain', idx: i });
+      rows.push({ text: '', style: 'dim', idx: i });
+    } else if (step.kind === 'thinking') {
+      if (expanded.has(i)) {
+        rows.push({ text: `${ICON.thinking} thinking`, style: 'dim', idx: i, _head: true });
+        for (const l of wrap(step.text, width - 3)) rows.push({ text: '   ' + l, style: 'dim', idx: i });
+      } else {
+        const n = step.text.split('\n').length;
+        rows.push({ text: `${ICON.thinking} thinking · ${n} lines  (⏎ expand)`, style: 'dim', idx: i, _head: true });
+      }
+      rows.push({ text: '', style: 'dim', idx: i });
+    } else if (step.kind === 'tool') {
+      const h = toolHeadline(step);
+      rows.push({ text: h.drill ? `${h.text}   ⏎` : h.text, style: h.style, idx: i, _head: true });
+    }
+  });
+  if (!rows.length) rows.push({ text: '(empty session)', style: 'dim' });
+  return rows;
+}
+
+export function taskRows(tasks, width) {
+  const rows = [];
+  tasks.forEach((t, i) => {
+    const icon = t.finalStatus === 'completed' ? ICON.ok : t.finalStatus === 'in_progress' ? ICON.run : ICON.pending;
+    const style = t.finalStatus === 'completed' ? 'ok' : t.finalStatus === 'in_progress' ? 'run' : 'dim';
+    rows.push({ text: `${icon} ${t.subject}`, style, idx: i, _head: true });
+    rows.push({ text: `   ${t.trail.join(' → ')}`, style: 'dim', idx: i });
+    if (t.description) for (const l of wrap(t.description, width - 3)) rows.push({ text: '   ' + l, style: 'dim', idx: i });
+    rows.push({ text: '', style: 'dim', idx: i });
+  });
+  if (!rows.length) rows.push({ text: '(no tasks in this session)', style: 'dim' });
+  return rows;
+}
+
+export function subagentRows(dispatches, width) {
+  const rows = [];
+  dispatches.forEach((d, i) => {
+    rows.push({ text: `${ICON.agent} Agent · ${d.subagentType}   ⏎`, style: 'edit', idx: i, _head: true });
+    for (const l of wrap('"' + d.prompt + '"', width - 3).slice(0, 3)) rows.push({ text: '   ' + l, style: 'dim', idx: i });
+    rows.push({ text: `   status: ${d.status}`, style: 'dim', idx: i });
+    rows.push({ text: '', style: 'dim', idx: i });
+  });
+  if (!rows.length) rows.push({ text: '(no subagents dispatched)', style: 'dim' });
+  return rows;
+}
+
+export function diffRows(step, width) {
+  const d = editDiff(step.tool, step.input);
+  const rows = [{ text: shortPath(step.input?.file_path || ''), style: 'accent' }, { text: '', style: 'dim' }];
+  for (const ln of d.lines) {
+    const prefix = ln.type === 'add' ? '+ ' : ln.type === 'del' ? '- ' : '  ';
+    const style = ln.type === 'add' ? 'add' : ln.type === 'del' ? 'del' : 'plain';
+    for (const l of wrap(ln.text, width - 2)) rows.push({ text: prefix + l, style });
+  }
+  return rows;
+}
+
+export function bashRows(step, width) {
+  const rows = [];
+  for (const l of wrap('$ ' + (step.input?.command ?? ''), width)) rows.push({ text: l, style: 'bash' });
+  rows.push({ text: '', style: 'dim' });
+  for (const l of wrap(step.result?.text ?? '(no output captured)', width)) rows.push({ text: l, style: 'plain' });
+  const exit = step.result?.structured?.exitCode;
+  if (exit !== undefined) { rows.push({ text: '', style: 'dim' }); rows.push({ text: `exit ${exit}`, style: 'dim' }); }
+  return rows;
+}
+
+export function readRows(step, width) {
+  return wrap(step.result?.text ?? '(no content)', width).map((l) => ({ text: l, style: 'plain' }));
+}
+
+// Build the left-pane rows as a SINGLE ordered list that is BOTH what the
+// screen shows AND what the cursor walks — so navigation order can never drift
+// from display order. `collapsed` is a Set of project names whose sessions are
+// hidden. Each row carries `kind` ('project' | 'session' | 'empty') plus the
+// metadata the keymap needs (project name, session path/summary).
+export function sessionListRows(groups, collapsed = new Set(), width = 40) {
+  const rows = [];
+  for (const g of groups) {
+    const isCollapsed = collapsed.has(g.project);
+    rows.push({
+      kind: 'project', project: g.project, collapsed: isCollapsed,
+      text: `${isCollapsed ? '▸' : '▾'} ${g.project}`, style: 'group',
+    });
+    if (isCollapsed) continue;
+    for (const s of g.sessions) {
+      rows.push({
+        kind: 'session', project: g.project, path: s.path, summary: s,
+        text: '  ' + String(s.title || '(untitled)').slice(0, Math.max(1, width - 2)), style: 'sess',
+      });
+    }
+  }
+  if (!rows.length) rows.push({ kind: 'empty', text: '(no sessions)', style: 'dim' });
+  return rows;
+}

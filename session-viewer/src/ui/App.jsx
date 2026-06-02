@@ -1,0 +1,302 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Box, Text, useInput, useApp } from 'ink';
+import { useTermSize } from './useTermSize.jsx';
+import { ScrollView } from './ScrollView.jsx';
+import { SessionList } from './SessionList.jsx';
+import { DrillIn } from './DrillIn.jsx';
+import * as store from '../io/store.js';
+import { parseLines } from '../core/parser.js';
+import { toSteps } from '../core/normalize.js';
+import { buildTaskBoard } from '../core/tasks.js';
+import { listDispatches, resolveAllDispatchFiles } from '../core/subagents.js';
+import * as R from './render.js';
+import { ensureVisible, clampTop } from './scroll.js';
+
+const EMPTY_SET = new Set(); // stable identity: "expand all" while searching
+
+function Tabs({ view, session }) {
+  const item = (key, label) => (
+    <Text key={key} color={view === key ? 'white' : 'gray'} bold={view === key} underline={view === key}>
+      {label + '   '}
+    </Text>
+  );
+  return (
+    <Box>
+      {item('conversation', 'Conversation')}
+      {item('tasks', `Tasks·${session.tasks.length}`)}
+      {item('subagents', `Subagents·${session.dispatches.length}`)}
+    </Box>
+  );
+}
+
+export function App({ root }) {
+  const { exit } = useApp();
+  const { cols, rows: termRows } = useTermSize();
+  const bodyHeight = Math.max(3, termRows - 2);
+  const contentHeight = Math.max(1, bodyHeight - 4); // detail pane minus border + tabs + meta lines
+  const leftWidth = 30;
+  const rightWidth = Math.max(20, cols - leftWidth - 4);
+
+  // Tracks mount status so async work that resolves after unmount/quit
+  // doesn't call setState on a torn-down tree.
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  const [sessions, setSessions] = useState([]); // SessionSummary stubs, enriched in place
+  const [scanning, setScanning] = useState(true);
+  const [unreadable, setUnreadable] = useState(0);
+  const [query, setQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [focus, setFocus] = useState('list');
+  const [selIdx, setSelIdx] = useState(0);      // cursor INTO navRows (headers + sessions)
+  const [collapsed, setCollapsed] = useState(new Set()); // project names whose sessions are hidden
+  const [session, setSession] = useState(null);
+  const [view, setView] = useState('conversation');
+  const [cursor, setCursor] = useState(0);
+  const [expanded, setExpanded] = useState(new Set());
+  const [top, setTop] = useState(0);
+  const [drill, setDrill] = useState([]);
+  const [drillTop, setDrillTop] = useState(0);
+
+  async function scan() {
+    setScanning(true);
+    const stubs = await store.listAllSessions(root); // cheap: readdir + stat only
+    if (!alive.current) return;
+    setSessions(stubs);                               // render the list instantly
+    const enriched = await store.enrichSummaries(stubs, {
+      concurrency: 8,
+      batchSize: 24,
+      onBatch: (snapshot) => { if (alive.current) setSessions(snapshot); }, // titles fill in progressively
+    });
+    if (!alive.current) return;
+    setUnreadable(enriched.filter((s) => s.unreadable).length);
+    setScanning(false);
+  }
+
+  useEffect(() => { scan(); }, [root]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter(
+      (s) => (s.title || '').toLowerCase().includes(q) || (s.firstPrompt || '').toLowerCase().includes(q),
+    );
+  }, [sessions, query]);
+
+  const groups = useMemo(() => {
+    const m = new Map();
+    for (const s of filtered) { if (!m.has(s.project)) m.set(s.project, []); m.get(s.project).push(s); }
+    return [...m.entries()].map(([project, sessions]) => ({ project, sessions }));
+  }, [filtered]);
+
+  // While searching, ignore the collapse set so every match is visible.
+  const effectiveCollapsed = query.trim() ? EMPTY_SET : collapsed;
+
+  // ONE ordered list: it is both what SessionList renders and what the cursor
+  // walks, so display order and ↑↓ order are the same array (the order bug
+  // came from navigating a separate, differently-sorted list).
+  const navRows = useMemo(
+    () => R.sessionListRows(groups, effectiveCollapsed, leftWidth - 2),
+    [groups, effectiveCollapsed, leftWidth],
+  );
+
+  useEffect(() => { setSelIdx((i) => Math.max(0, Math.min(i, navRows.length - 1))); }, [navRows.length]);
+
+  function toggleCollapse(project) {
+    setCollapsed((c) => { const n = new Set(c); n.has(project) ? n.delete(project) : n.add(project); return n; });
+  }
+
+  // Opening a session reads exactly ONE file. Subagent logs stay unread
+  // (subSummaries/resolvedFiles: null) until the user drills into a subagent.
+  async function openSession(summary) {
+    let records;
+    try {
+      ({ records } = parseLines(await store.readLines(summary.path)));
+    } catch {
+      if (!alive.current) return;
+      setSession({
+        summary,
+        steps: [{ kind: 'assistantText', text: '(session file could not be read)' }],
+        tasks: [], dispatches: [], subSummaries: [], resolvedFiles: [],
+      });
+      setView('conversation'); setCursor(0); setTop(0); setExpanded(new Set()); setDrill([]); setFocus('detail');
+      return;
+    }
+    if (!alive.current) return;
+    setSession({
+      summary,
+      steps: toSteps(records),
+      tasks: buildTaskBoard(records),
+      dispatches: listDispatches(records),
+      subSummaries: null,
+      resolvedFiles: null,
+    });
+    setView('conversation'); setCursor(0); setTop(0); setExpanded(new Set()); setDrill([]); setFocus('detail');
+  }
+
+  const { rows, count } = useMemo(() => {
+    if (!session) return { rows: [], count: 0 };
+    if (view === 'conversation') return { rows: R.conversationRows(session.steps, expanded, rightWidth), count: session.steps.length };
+    if (view === 'tasks') return { rows: R.taskRows(session.tasks, rightWidth), count: session.tasks.length };
+    return { rows: R.subagentRows(session.dispatches, rightWidth), count: session.dispatches.length };
+  }, [session, view, expanded, rightWidth]);
+
+  // Keep the cursored item within the actual visible content window.
+  useEffect(() => { setTop((t) => ensureVisible(rows, contentHeight, cursor, t)); }, [cursor, rows, contentHeight]);
+
+  function pushDrill(d) { setDrill((s) => [...s, d]); setDrillTop(0); }
+
+  // Resolve every dispatch to its subagent file ONCE, with a single shared
+  // `used` set, so distinct same-prompt dispatches map to distinct files.
+  // Cached on the session; re-opening the same dispatch reuses its file.
+  async function ensureResolved() {
+    if (session.resolvedFiles) return session.resolvedFiles;
+    const subs = await store.readSubagentSummaries(session.summary.projectDir, session.summary.id);
+    const resolvedFiles = resolveAllDispatchFiles(session.dispatches, subs);
+    if (alive.current) setSession((s) => (s ? { ...s, subSummaries: subs, resolvedFiles } : s));
+    return resolvedFiles;
+  }
+
+  async function openSubagentByIndex(i, subagentType) {
+    try {
+      const resolved = await ensureResolved();
+      const file = resolved[i];
+      if (!file) { pushDrill({ title: 'subagent', rows: [{ text: '(subagent log not found / ambiguous)', style: 'dim' }] }); return; }
+      const { records } = parseLines(await store.readLines(file));
+      if (!alive.current) return;
+      pushDrill({ title: `⛭ ${subagentType || ''}`, rows: R.conversationRows(toSteps(records), new Set(), rightWidth - 2) });
+    } catch {
+      pushDrill({ title: 'subagent', rows: [{ text: '(subagent log unreadable)', style: 'dim' }] });
+    }
+  }
+
+  async function doDrill() {
+    if (view === 'conversation') {
+      const step = session.steps[cursor];
+      if (!step) return;
+      if (step.kind === 'thinking') {
+        const e = new Set(expanded);
+        e.has(cursor) ? e.delete(cursor) : e.add(cursor);
+        setExpanded(e);
+        return;
+      }
+      if (step.kind !== 'tool') return;
+      if (step.subtype === 'edit' || step.subtype === 'write') {
+        pushDrill({ title: `✎ ${R.shortPath(step.input.file_path || '')}`, rows: R.diffRows(step, rightWidth - 2) });
+      } else if (step.subtype === 'bash') {
+        pushDrill({ title: '$ output', rows: R.bashRows(step, rightWidth - 2) });
+      } else if (step.subtype === 'read' && step.result) {
+        pushDrill({ title: '📄 result', rows: R.readRows(step, rightWidth - 2) });
+      } else if (step.subtype === 'agent') {
+        // map this agent step to its dispatch by occurrence order
+        let agentIdx = -1;
+        for (let k = 0; k <= cursor; k++) {
+          const s2 = session.steps[k];
+          if (s2.kind === 'tool' && s2.subtype === 'agent') agentIdx++;
+        }
+        await openSubagentByIndex(agentIdx, step.input.subagent_type);
+      }
+    } else if (view === 'subagents') {
+      const d = session.dispatches[cursor];
+      if (d) await openSubagentByIndex(cursor, d.subagentType);
+    }
+  }
+
+  useInput((input, key) => {
+    if (searching) { if (key.escape) setSearching(false); return; } // TextInput owns input otherwise
+    if (input === 'q') { exit(); return; }
+
+    if (drill.length) {
+      const dr = drill[drill.length - 1];
+      const dh = Math.max(1, termRows - 5); // matches DrillIn's ScrollView height
+      if (key.escape) setDrill((s) => s.slice(0, -1));
+      else if (key.upArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t - 1));
+      else if (key.downArrow) setDrillTop((t) => clampTop(dr.rows.length, dh, t + 1));
+      else if (key.pageUp) setDrillTop((t) => clampTop(dr.rows.length, dh, t - dh));
+      else if (key.pageDown) setDrillTop((t) => clampTop(dr.rows.length, dh, t + dh));
+      return;
+    }
+
+    if (input === '/') { setSearching(true); return; }
+    if (input === 'r') { scan().then(() => { if (alive.current && session) openSession(session.summary); }); return; }
+
+    if (focus === 'list') {
+      const row = navRows[selIdx];
+      if (key.upArrow) setSelIdx((i) => Math.max(0, i - 1));
+      else if (key.downArrow) setSelIdx((i) => Math.min(navRows.length - 1, i + 1));
+      else if (key.pageUp) setSelIdx((i) => Math.max(0, i - bodyHeight));
+      else if (key.pageDown) setSelIdx((i) => Math.min(navRows.length - 1, i + bodyHeight));
+      else if (input === 'g') setSelIdx(0);
+      else if (input === 'G') setSelIdx(Math.max(0, navRows.length - 1));
+      else if (key.return) {
+        if (row?.kind === 'project') toggleCollapse(row.project);
+        else if (row?.kind === 'session') openSession(row.summary);
+      } else if (key.rightArrow) {
+        if (row?.kind === 'project') {
+          if (row.collapsed) toggleCollapse(row.project);          // expand
+          else setSelIdx((i) => Math.min(navRows.length - 1, i + 1)); // step into first child
+        } else if (row?.kind === 'session') openSession(row.summary);
+      } else if (key.leftArrow) {
+        if (row?.kind === 'project') { if (!row.collapsed) toggleCollapse(row.project); }
+        else if (row?.kind === 'session') {
+          let p = selIdx; while (p > 0 && navRows[p].kind !== 'project') p--; // jump to parent header
+          setSelIdx(p);
+          const proj = navRows[p]?.project;
+          if (proj && !collapsed.has(proj)) toggleCollapse(proj);
+        }
+      }
+    } else {
+      if (key.upArrow) setCursor((c) => Math.max(0, c - 1));
+      else if (key.downArrow) setCursor((c) => Math.max(0, Math.min(count - 1, c + 1)));
+      else if (key.pageUp) setCursor((c) => Math.max(0, c - bodyHeight));
+      else if (key.pageDown) setCursor((c) => Math.max(0, Math.min(count - 1, c + bodyHeight)));
+      else if (input === 'g') setCursor(0);
+      else if (input === 'G') setCursor(Math.max(0, count - 1));
+      else if (key.tab) { setView((v) => (v === 'conversation' ? 'tasks' : v === 'tasks' ? 'subagents' : 'conversation')); setCursor(0); setTop(0); }
+      else if (key.return) doDrill();
+      else if (key.leftArrow || key.escape) setFocus('list');
+    }
+  });
+
+  // ---- render ----
+  if (drill.length > 0) {
+    const d = drill[drill.length - 1];
+    return <DrillIn title={d.title} rows={d.rows} top={drillTop} height={Math.max(1, termRows - 5)} />;
+  }
+
+  const hint = focus === 'list'
+    ? '↑↓ move · ⏎ open/expand · → in · ← collapse · / search · r refresh · q quit'
+    : '↑↓ move · ⏎ drill-in · ⇥ views · ← back · g/G top/bottom · q quit';
+
+  return (
+    <Box flexDirection="column" width={cols} height={Math.max(1, termRows - 1)}>
+      <Box height={bodyHeight}>
+        <Box width={leftWidth} flexDirection="column" borderStyle="round" borderColor={focus === 'list' ? 'cyan' : 'gray'}>
+          <SessionList
+            rows={navRows}
+            cursor={selIdx}
+            searching={searching}
+            query={query}
+            onChange={setQuery}
+            onSubmit={() => setSearching(false)}
+            height={bodyHeight - 2}
+          />
+        </Box>
+        <Box flexGrow={1} flexDirection="column" borderStyle="round" borderColor={focus === 'detail' ? 'cyan' : 'gray'} paddingX={1}>
+          {!session ? (
+            <Text dimColor>
+              {filtered.length} sessions{scanning ? ' · scanning…' : ''}{unreadable ? ` · ${unreadable} unreadable` : ''}. Select one and press ⏎.
+            </Text>
+          ) : (
+            <>
+              <Tabs view={view} session={session} />
+              <Text dimColor>{session.summary.cwd || ''} · {session.summary.gitBranch || ''}</Text>
+              <ScrollView rows={rows} height={contentHeight} top={top} cursorIdx={focus === 'detail' ? cursor : undefined} />
+            </>
+          )}
+        </Box>
+      </Box>
+      <Text dimColor>{hint}</Text>
+    </Box>
+  );
+}
