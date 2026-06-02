@@ -44,7 +44,22 @@ try {
   contains(lastFrame(), 'Relax init-workspace perms', 'session title appears in list');
   contains(lastFrame(), '-Users-me-cc', 'project group header appears');
 
-  // 2. Open the session (Enter) -> conversation transcript.
+  // 1b. Cursor starts on the project header; Enter collapses it (sessions hide),
+  //     Enter again re-expands. Guards the two-level tree toggle.
+  stdin.write('\r');
+  await sleep(80);
+  assert.ok(
+    !lastFrame().includes('Relax init-workspace perms'),
+    'collapsing a project hides its sessions',
+  );
+  console.log('  PASS collapse hides sessions');
+  stdin.write('\r');
+  await sleep(80);
+  contains(lastFrame(), 'Relax init-workspace perms', 're-expanding shows the sessions again');
+
+  // 2. Move down onto the first session (cursor was on the header), open it.
+  stdin.write(DOWN);
+  await sleep(50);
   stdin.write('\r');
   await sleep(300);
   const conv = lastFrame();

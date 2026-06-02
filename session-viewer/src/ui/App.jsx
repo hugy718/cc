@@ -12,6 +12,8 @@ import { listDispatches, resolveAllDispatchFiles } from '../core/subagents.js';
 import * as R from './render.js';
 import { ensureVisible, clampTop } from './scroll.js';
 
+const EMPTY_SET = new Set(); // stable identity: "expand all" while searching
+
 function Tabs({ view, session }) {
   const item = (key, label) => (
     <Text key={key} color={view === key ? 'white' : 'gray'} bold={view === key} underline={view === key}>
@@ -46,7 +48,8 @@ export function App({ root }) {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [focus, setFocus] = useState('list');
-  const [selIdx, setSelIdx] = useState(0);
+  const [selIdx, setSelIdx] = useState(0);      // cursor INTO navRows (headers + sessions)
+  const [collapsed, setCollapsed] = useState(new Set()); // project names whose sessions are hidden
   const [session, setSession] = useState(null);
   const [view, setView] = useState('conversation');
   const [cursor, setCursor] = useState(0);
@@ -80,13 +83,28 @@ export function App({ root }) {
     );
   }, [sessions, query]);
 
-  useEffect(() => { setSelIdx((i) => Math.max(0, Math.min(i, filtered.length - 1))); }, [filtered.length]);
-
   const groups = useMemo(() => {
     const m = new Map();
     for (const s of filtered) { if (!m.has(s.project)) m.set(s.project, []); m.get(s.project).push(s); }
     return [...m.entries()].map(([project, sessions]) => ({ project, sessions }));
   }, [filtered]);
+
+  // While searching, ignore the collapse set so every match is visible.
+  const effectiveCollapsed = query.trim() ? EMPTY_SET : collapsed;
+
+  // ONE ordered list: it is both what SessionList renders and what the cursor
+  // walks, so display order and ↑↓ order are the same array (the order bug
+  // came from navigating a separate, differently-sorted list).
+  const navRows = useMemo(
+    () => R.sessionListRows(groups, effectiveCollapsed, leftWidth - 2),
+    [groups, effectiveCollapsed, leftWidth],
+  );
+
+  useEffect(() => { setSelIdx((i) => Math.max(0, Math.min(i, navRows.length - 1))); }, [navRows.length]);
+
+  function toggleCollapse(project) {
+    setCollapsed((c) => { const n = new Set(c); n.has(project) ? n.delete(project) : n.add(project); return n; });
+  }
 
   // Opening a session reads exactly ONE file. Subagent logs stay unread
   // (subSummaries/resolvedFiles: null) until the user drills into a subagent.
@@ -203,9 +221,30 @@ export function App({ root }) {
     if (input === 'r') { scan().then(() => { if (alive.current && session) openSession(session.summary); }); return; }
 
     if (focus === 'list') {
+      const row = navRows[selIdx];
       if (key.upArrow) setSelIdx((i) => Math.max(0, i - 1));
-      else if (key.downArrow) setSelIdx((i) => Math.min(filtered.length - 1, i + 1));
-      else if (key.return || key.rightArrow) { const s = filtered[selIdx]; if (s) openSession(s); }
+      else if (key.downArrow) setSelIdx((i) => Math.min(navRows.length - 1, i + 1));
+      else if (key.pageUp) setSelIdx((i) => Math.max(0, i - bodyHeight));
+      else if (key.pageDown) setSelIdx((i) => Math.min(navRows.length - 1, i + bodyHeight));
+      else if (input === 'g') setSelIdx(0);
+      else if (input === 'G') setSelIdx(Math.max(0, navRows.length - 1));
+      else if (key.return) {
+        if (row?.kind === 'project') toggleCollapse(row.project);
+        else if (row?.kind === 'session') openSession(row.summary);
+      } else if (key.rightArrow) {
+        if (row?.kind === 'project') {
+          if (row.collapsed) toggleCollapse(row.project);          // expand
+          else setSelIdx((i) => Math.min(navRows.length - 1, i + 1)); // step into first child
+        } else if (row?.kind === 'session') openSession(row.summary);
+      } else if (key.leftArrow) {
+        if (row?.kind === 'project') { if (!row.collapsed) toggleCollapse(row.project); }
+        else if (row?.kind === 'session') {
+          let p = selIdx; while (p > 0 && navRows[p].kind !== 'project') p--; // jump to parent header
+          setSelIdx(p);
+          const proj = navRows[p]?.project;
+          if (proj && !collapsed.has(proj)) toggleCollapse(proj);
+        }
+      }
     } else {
       if (key.upArrow) setCursor((c) => Math.max(0, c - 1));
       else if (key.downArrow) setCursor((c) => Math.max(0, Math.min(count - 1, c + 1)));
@@ -226,7 +265,7 @@ export function App({ root }) {
   }
 
   const hint = focus === 'list'
-    ? '↑↓ select · ⏎ open · / search · r refresh · q quit'
+    ? '↑↓ move · ⏎ open/expand · → in · ← collapse · / search · r refresh · q quit'
     : '↑↓ move · ⏎ drill-in · ⇥ views · ← back · g/G top/bottom · q quit';
 
   return (
@@ -234,14 +273,13 @@ export function App({ root }) {
       <Box height={bodyHeight}>
         <Box width={leftWidth} flexDirection="column" borderStyle="round" borderColor={focus === 'list' ? 'cyan' : 'gray'}>
           <SessionList
-            groups={groups}
-            selectedPath={filtered[selIdx]?.path}
+            rows={navRows}
+            cursor={selIdx}
             searching={searching}
             query={query}
             onChange={setQuery}
             onSubmit={() => setSearching(false)}
             height={bodyHeight - 2}
-            width={leftWidth - 2}
           />
         </Box>
         <Box flexGrow={1} flexDirection="column" borderStyle="round" borderColor={focus === 'detail' ? 'cyan' : 'gray'} paddingX={1}>

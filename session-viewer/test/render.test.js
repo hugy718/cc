@@ -16,7 +16,12 @@ test('shortPath keeps last two segments', () => {
 
 test('wrap hard-wraps to width and sanitizes control chars', () => {
   assert.deepEqual(wrap('abcdef', 3), ['abc', 'def']);
-  assert.equal(sanitize('ab'), 'ab');
+  // strips a C0 control char
+  assert.equal(sanitize('a\u0001b'), 'ab');
+  // MUST preserve spaces, punctuation, tab, and newline (guards against an
+  // accidental space-to-hyphen range like /[ --]/ that would eat real text)
+  assert.equal(sanitize('a b-c.d'), 'a b-c.d');
+  assert.equal(sanitize('a\tb\nc'), 'a\tb\nc');
 });
 
 test('conversationRows: head rows carry idx + _head; edit row is drillable', () => {
@@ -56,7 +61,35 @@ test('bashRows include the command and output', () => {
 
 test('sessionListRows produce group headers and session rows with paths', () => {
   const groups = [{ project: 'p', sessions: [{ title: 'T', path: '/p/s.jsonl' }] }];
-  const rows = sessionListRows(groups, 40);
+  const rows = sessionListRows(groups, new Set(), 40);
   assert.equal(rows[0].style, 'group');
+  assert.equal(rows[0].kind, 'project');
+  assert.equal(rows[0].project, 'p');
+  assert.match(rows[0].text, /▾/); // expanded caret
+  assert.equal(rows[1].kind, 'session');
   assert.equal(rows[1].path, '/p/s.jsonl');
+});
+
+test('sessionListRows hides sessions of a collapsed project and shows a collapsed caret', () => {
+  const groups = [{ project: 'p', sessions: [{ title: 'T', path: '/p/s.jsonl' }] }];
+  const rows = sessionListRows(groups, new Set(['p']), 40);
+  assert.equal(rows.length, 1);              // header only, no session rows
+  assert.equal(rows[0].kind, 'project');
+  assert.match(rows[0].text, /▸/);           // collapsed caret
+});
+
+// Single source of truth: the row order returned here IS the cursor traversal
+// order in the UI, so a project's sessions are always contiguous under its
+// header (the bug was that ↑↓ walked a global-mtime array while the screen
+// grouped by project — the two orders diverged).
+test('sessionListRows keeps each project\'s sessions contiguous under its header, in order', () => {
+  const groups = [
+    { project: 'p1', sessions: [{ title: 'a', path: '/p1/a' }, { title: 'b', path: '/p1/b' }] },
+    { project: 'p2', sessions: [{ title: 'c', path: '/p2/c' }] },
+  ];
+  const rows = sessionListRows(groups, new Set(), 40);
+  assert.deepEqual(
+    rows.map((r) => r.kind === 'project' ? `[${r.project}]` : r.path),
+    ['[p1]', '/p1/a', '/p1/b', '[p2]', '/p2/c'],
+  );
 });
