@@ -1,0 +1,168 @@
+import AppKit
+import Combine
+import SwiftUI
+import ClaudeUsageBarCore
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem!
+    private let settings = Settings()
+    private var viewModel: UsageViewModel!
+    private var reader: CacheFileReader!
+    private var timer: Timer?
+    private var cancellables = Set<AnyCancellable>()
+    private var watcher: CacheFileWatcher?
+    private var popover: NSPopover!
+    private let gate = MonotonicSnapshotGate()
+    private var lastSnapshot: UsageSnapshot?
+
+    private var cacheURL: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".claude/usage-cache.json")
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        viewModel = UsageViewModel(evaluator: SnapshotEvaluator(staleAfter: 1800))
+        reader = CacheFileReader(url: cacheURL)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
+        refresh()
+        startTimer()
+
+        watcher = CacheFileWatcher(directoryURL: cacheURL.deletingLastPathComponent()) { [weak self] in
+            self?.refresh()
+        }
+        watcher?.start()
+
+        let settingsBridge = SettingsBridge(settings: settings) { [weak self] in
+            self?.applySettingsChange()
+        }
+        let content = DropdownView(
+            viewModel: viewModel,
+            settings: settingsBridge,
+            resetText: { [weak self] date in
+                let clock = self?.settings.clock ?? .twentyFourHour
+                return ResetFormatter(clock: clock, calendar: .current).string(for: date, now: Date())
+            },
+            onRefresh: { [weak self] in self?.refreshFromAPI() },
+            onQuit: { NSApp.terminate(nil) })
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: content)
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePopover)
+
+        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        LaunchAgentInstaller.apply(enabled: settings.launchAtLogin, programPath: exePath)
+    }
+
+    @objc private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            refresh()                 // instant: show cached data from the file
+            maybeRefreshFromAPI()     // live: throttled network refresh on open
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    /// Trigger a live API refresh when the popover opens, but at most once per
+    /// `apiRefreshThrottle` seconds so rapid open/close doesn't trip the
+    /// endpoint's aggressive 429 rate-limit.
+    private var lastAPIRefreshAt: Date?
+    private let apiRefreshThrottle: TimeInterval = 10
+    private func maybeRefreshFromAPI() {
+        if let last = lastAPIRefreshAt, Date().timeIntervalSince(last) < apiRefreshThrottle { return }
+        lastAPIRefreshAt = Date()
+        refreshFromAPI()
+    }
+
+    private func startTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(settings.refreshInterval),
+                                     repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        if let snapshot = reader.read(), gate.accept(snapshot) {
+            lastSnapshot = snapshot
+        }
+        viewModel.apply(snapshot: lastSnapshot, now: Date())
+        updateMenuBarTitle()
+    }
+
+    private func updateMenuBarTitle() {
+        guard let button = statusItem.button else { return }
+        guard let e = viewModel.evaluated else {
+            button.title = "—"
+            return
+        }
+        let builder = MenuBarTextBuilder()
+        let segs = builder.segments(for: e)
+        if segs.isEmpty {
+            button.title = "—"
+            return
+        }
+        // Compact: color-coded percentages only. Reset times are in the dropdown,
+        // keeping the status item narrow so the notch on a built-in display
+        // doesn't cull it from the menu bar.
+        let attr = NSMutableAttributedString()
+        let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        for (i, s) in segs.enumerated() {
+            if i > 0 {
+                attr.append(NSAttributedString(string: "  ", attributes: [.font: baseFont]))
+            }
+            attr.append(NSAttributedString(string: s.percentText, attributes: [
+                .font: baseFont,
+                .foregroundColor: Self.color(for: s.level)
+            ]))
+        }
+        button.attributedTitle = attr
+    }
+
+    private static func color(for level: UsageLevel) -> NSColor {
+        switch level {
+        case .low: return .systemGreen
+        case .medium: return .systemYellow
+        case .high: return .systemRed
+        }
+    }
+
+    private func applySettingsChange() {
+        let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        LaunchAgentInstaller.apply(enabled: settings.launchAtLogin, programPath: exePath)
+        refresh()
+    }
+
+    private static let oauthUsageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
+    @objc private func refreshFromAPI() {
+        guard let token = KeychainTokenProvider.token() else {
+            viewModel.note("Sign in to Claude Code first")
+            return
+        }
+        let client = OAuthRefreshClient(fetcher: URLSessionFetcher(), url: Self.oauthUsageURL)
+        Task { @MainActor in
+            do {
+                let outcome = try await client.refresh(token: token)
+                switch outcome {
+                case .success(let snap):
+                    if self.gate.accept(snap) { self.lastSnapshot = snap }
+                    self.viewModel.apply(snapshot: self.lastSnapshot, now: Date())
+                    self.updateMenuBarTitle()
+                case .rateLimited: self.viewModel.note("Rate-limited, try later")
+                case .failed(let status): self.viewModel.note("API refresh failed (HTTP \(status))")
+                }
+            } catch {
+                CCULog.write("refresh threw: \(error)")
+                self.viewModel.note("Refresh error: \(error.localizedDescription)")
+            }
+        }
+    }
+}

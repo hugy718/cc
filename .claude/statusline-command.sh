@@ -1,6 +1,11 @@
 #!/bin/bash
 input=$(cat 2>/dev/null)
 
+# Mirror account rate limits to the usage cache for ClaudeUsageBar (best-effort, backgrounded).
+if [ -n "$input" ]; then
+  printf '%s' "$input" | python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tracker/producer/write_usage_cache.py" >/dev/null 2>&1 &
+fi
+
 # Parse JSON input from Claude Code (if available)
 if [ -n "$input" ]; then
   eval "$(echo "$input" | python3 -c "
