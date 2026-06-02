@@ -19,10 +19,22 @@ npm start -- /path/to/other/projects
 
 ## Keys
 
-- `↑/↓` move · `⏎` open session / drill-in · `←`/`Esc` back
-- `Tab` switch Conversation / Tasks / Subagents
+**Session list (left pane)** — a collapsible project tree
+
+- `↑/↓` move · `⏎` open a session, or expand/collapse a project
+- `→` open / expand · `←` collapse (on a session, jumps to its project)
 - `g`/`G` top/bottom · `PgUp`/`PgDn` page
 - `/` search (title + your prompts) · `r` refresh · `q` quit
+
+**Session view (right pane)**
+
+- `↑/↓` move · `⏎` drill-in (diff / output / subagent) · `←`/`Esc` back
+- `Tab` switch Conversation / Tasks / Subagents
+- `g`/`G` top/bottom · `PgUp`/`PgDn` page
+
+**Drill-in**
+
+- `↑/↓` scroll · `Esc` close · `q` quit
 
 ## What it shows
 
