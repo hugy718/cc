@@ -22,9 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let formatter = ResetFormatter(clock: settings.clock, calendar: .current)
-        viewModel = UsageViewModel(formatter: formatter,
-                                   evaluator: SnapshotEvaluator(staleAfter: 1800))
+        viewModel = UsageViewModel(evaluator: SnapshotEvaluator(staleAfter: 1800))
         reader = CacheFileReader(url: cacheURL)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -105,13 +103,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = "—"
             return
         }
-        let formatter = ResetFormatter(clock: settings.clock, calendar: .current)
-        let builder = MenuBarTextBuilder(formatter: formatter)
-        let segs = builder.segments(for: e, now: Date())
+        let builder = MenuBarTextBuilder()
+        let segs = builder.segments(for: e)
         if segs.isEmpty {
             button.title = "—"
             return
         }
+        // Compact: color-coded percentages only. Reset times are in the dropdown,
+        // keeping the status item narrow so the notch on a built-in display
+        // doesn't cull it from the menu bar.
         let attr = NSMutableAttributedString()
         let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         for (i, s) in segs.enumerated() {
@@ -121,10 +121,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             attr.append(NSAttributedString(string: s.percentText, attributes: [
                 .font: baseFont,
                 .foregroundColor: Self.color(for: s.level)
-            ]))
-            attr.append(NSAttributedString(string: " " + s.resetText, attributes: [
-                .font: baseFont,
-                .foregroundColor: NSColor.secondaryLabelColor
             ]))
         }
         button.attributedTitle = attr

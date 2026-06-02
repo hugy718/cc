@@ -8,15 +8,15 @@ It lives only in the menu bar (no Dock icon, no window).
 
 ## What you see
 
-**In the menu bar**, both windows as color‑coded text:
+**In the menu bar**, both windows as color‑coded percentages:
 
 ```
-42% →15:42   18% →Sun 16:00
+42%  18%
 ```
 
-- The number is **percent used**; the `→time` is when that window **resets** (absolute clock time).
+- Each number is **percent used** — the 5‑hour window, then the weekly window.
 - Color shows urgency: **green** under 50%, **yellow** 50–80%, **red** 80%+.
-- Today's resets show as `15:42`; later ones show the weekday, e.g. `Sun 16:00`.
+- It's deliberately compact so the item survives the **notch** on built‑in displays. The **reset times** (e.g. `→15:42`, `→Sun 16:00`) are shown in the dropdown.
 
 **Click it** for a dropdown with:
 - A progress bar, percentage, and reset time for each window.
@@ -70,6 +70,9 @@ Claude's live usage endpoint limits frequent requests. Wait a bit and reopen —
 
 **The menu bar shows `—`.**
 No data yet. Use Claude Code once to create `~/.claude/usage-cache.json`, or click Refresh.
+
+**It shows on my external monitor but not my laptop screen.**
+macOS draws a menu‑bar item on only **one display at a time — the active one** (where you last clicked); no app can put a status item on all displays at once. When the active display is a built‑in screen with a **notch**, a crowded menu bar can push items behind the notch, and macOS hides them. The compact `42% 18%` format minimizes this. If it still hides on the laptop, free up menu‑bar space (quit a few menu‑bar apps) or use a manager like [Ice](https://github.com/jordanbaird/Ice) / Bartender.
 
 **The app icon looks like a blank/old icon in Finder.**
 That's the macOS icon cache, not the app. Force a refresh:

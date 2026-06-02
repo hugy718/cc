@@ -8,14 +8,11 @@ public final class UsageViewModel: ObservableObject {
     @Published public private(set) var updatedAgoText: String = ""
     @Published public private(set) var noteText: String?
 
-    private let formatter: ResetFormatter
     private let evaluator: SnapshotEvaluator
-    private let textBuilder: MenuBarTextBuilder
+    private let textBuilder = MenuBarTextBuilder()
 
-    public init(formatter: ResetFormatter, evaluator: SnapshotEvaluator) {
-        self.formatter = formatter
+    public init(evaluator: SnapshotEvaluator) {
         self.evaluator = evaluator
-        self.textBuilder = MenuBarTextBuilder(formatter: formatter)
     }
 
     public func note(_ message: String) {
@@ -31,7 +28,7 @@ public final class UsageViewModel: ObservableObject {
         }
         let e = evaluator.evaluate(snapshot, now: now)
         evaluated = e
-        menuBarText = textBuilder.text(for: e, now: now)
+        menuBarText = textBuilder.text(for: e)
         updatedAgoText = "updated " + Self.ago(from: e.capturedAt, to: now)
         noteText = nil
     }
